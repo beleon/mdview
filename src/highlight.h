@@ -63,12 +63,17 @@ static inline std::string html_decode(const std::string &s) {
 static inline std::vector<CodeBlock> extract_code_blocks(const std::string &html) {
     std::vector<CodeBlock> blocks;
     size_t pos = 0;
-    static const char OPEN[] = "<pre><code";
-    static const char CLOSE[] = "</code></pre>";
+    static const char OPEN[]    = "<pre><code";
+    static const char OPEN_PRE[] = "<pre>";
+    static const char CLOSE[]   = "</code></pre>";
     while (true) {
         size_t pre = html.find(OPEN, pos);
         if (pre == std::string::npos) break;
-        size_t open_end = html.find('>', pre);
+        /* The next '>' after `pre` closes the <pre> tag, not the <code> we
+           want. Skip past "<pre>" first, then find the '>' that closes
+           the <code ...> opening tag. */
+        size_t code_tag_start = pre + sizeof(OPEN_PRE) - 1;
+        size_t open_end = html.find('>', code_tag_start);
         if (open_end == std::string::npos) break;
         size_t content_start = open_end + 1;
         size_t close = html.find(CLOSE, content_start);
@@ -78,7 +83,8 @@ static inline std::vector<CodeBlock> extract_code_blocks(const std::string &html
         b.content_start = content_start;
         b.content_end   = close;
 
-        std::string opening = html.substr(pre, content_start - pre);
+        /* The <code ...> opening tag — language attribute lives here. */
+        std::string opening = html.substr(code_tag_start, content_start - code_tag_start);
         size_t lp = opening.find("language-");
         if (lp != std::string::npos) {
             size_t le = lp + 9;
