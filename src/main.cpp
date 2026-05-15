@@ -237,6 +237,16 @@ struct App {
     std::vector<TocEntry> toc_entries;
     double                toc_scroll_y = 0;
     int                   toc_hover_idx = -1;
+
+    /* Right-click context menu (drawn as an in-window overlay) */
+    enum class MenuAction { OpenLink, CopyLink, Copy, SelectAll, Find, Reload, ToggleDark };
+    struct MenuItem { std::string label; MenuAction action; std::string param; bool enabled; };
+    struct ContextMenu {
+        bool visible = false;
+        int x = 0, y = 0, w = 0, h = 0;
+        int hover_idx = -1;
+        std::vector<MenuItem> items;
+    } menu;
 };
 
 static int max_sy(App *a) { return std::max(0, (int)(a->doc_h * a->zoom) - a->vp_h); }
@@ -523,6 +533,12 @@ static void draw_sidebar(App *a, cairo_t *cr) {
     cairo_restore(cr);
 }
 
+/* Context menu helpers (forward declarations of functions that reference
+   App's nested types). Implementations follow draw_search_bar. */
+static void   menu_close(App *a);
+static int    menu_item_at(App *a, int x, int y);
+static void   draw_context_menu(App *a, cairo_t *cr);
+
 /* Returns the TOC entry index under window-coord (x,y), or -1. */
 static int toc_index_at(App *a, int x, int y) {
     if (!a->toc_visible || x < 0 || x >= SIDEBAR_W) return -1;
@@ -672,6 +688,28 @@ static void scroll_to_anchor(App *a, const std::string &id) {
     clamp(a);
 }
 
+/* Walk the litehtml tree looking for an <a> whose placement contains
+   (doc_x, doc_y). For inline anchors, the placement only covers their
+   primary line box — accuracy is limited but adequate for "is the right
+   click on a link?" detection. Returns the href or empty string. */
+static std::string href_at(litehtml::element::ptr el, int doc_x, int doc_y) {
+    if (!el) return "";
+    const char *tag = el->get_tagName();
+    if (tag && (tag[0] == 'a' || tag[0] == 'A') && tag[1] == '\0') {
+        litehtml::position p = el->get_placement();
+        if (doc_x >= p.x && doc_x < p.x + p.width &&
+            doc_y >= p.y && doc_y < p.y + p.height) {
+            const char *href = el->get_attr("href");
+            if (href) return href;
+        }
+    }
+    for (const auto &c : el->children()) {
+        std::string r = href_at(c, doc_x, doc_y);
+        if (!r.empty()) return r;
+    }
+    return "";
+}
+
 /* Spawn xdg-open <url> detached. Double-fork pattern so the grandchild is
    re-parented to init and we don't need to waitpid it later. */
 static void open_external_url(const std::string &url) {
@@ -769,6 +807,129 @@ static void draw_search_bar(App *a, cairo_t *cr, int ww) {
 }
 
 /* ========================================================================= */
+/* Right-click context menu                                                  */
+/* ========================================================================= */
+
+/* Forward declarations: menu_run calls these but they're defined further
+   down in the file. */
+static void toggle_dark_mode(App *a, mdv_window *w);
+static void reload_file(void *ud);
+
+static const int MENU_ITEM_H = 26;
+static const int MENU_PAD_V  = 4;
+static const int MENU_W      = 220;
+
+static void menu_close(App *a) {
+    a->menu.visible = false;
+    a->menu.items.clear();
+    a->menu.hover_idx = -1;
+}
+
+/* Build menu items based on right-click context: was the click over a link?
+   does the selection contain anything? */
+static void menu_build(App *a, int doc_x, int doc_y) {
+    a->menu.items.clear();
+    std::string href = href_at(a->doc ? a->doc->root() : nullptr, doc_x, doc_y);
+    if (!href.empty() && href[0] != '#') {
+        a->menu.items.push_back({"Open Link",     App::MenuAction::OpenLink, href, true});
+        a->menu.items.push_back({"Copy Link URL", App::MenuAction::CopyLink, href, true});
+    }
+    bool has_selection = a->con.selection().active &&
+                         !a->con.get_selected_text().empty();
+    a->menu.items.push_back({"Copy",           App::MenuAction::Copy,       "", has_selection});
+    a->menu.items.push_back({"Select All",     App::MenuAction::SelectAll,  "", a->doc != nullptr});
+    a->menu.items.push_back({"Find…",          App::MenuAction::Find,       "", true});
+    a->menu.items.push_back({"Reload",         App::MenuAction::Reload,     "", true});
+    a->menu.items.push_back({a->dark_mode ? "Use Light Theme" : "Use Dark Theme",
+                              App::MenuAction::ToggleDark, "", true});
+}
+
+/* Position the menu near (win_x, win_y), clamped so it stays in the window. */
+static void menu_open_at(App *a, int win_x, int win_y, int ww) {
+    if (a->menu.items.empty()) return;
+    a->menu.w = MENU_W;
+    a->menu.h = 2 * MENU_PAD_V + (int)a->menu.items.size() * MENU_ITEM_H;
+    a->menu.x = win_x;
+    a->menu.y = win_y;
+    if (a->menu.x + a->menu.w > ww)         a->menu.x = ww - a->menu.w;
+    if (a->menu.y + a->menu.h > a->vp_h)    a->menu.y = a->vp_h - a->menu.h;
+    if (a->menu.x < 0)                      a->menu.x = 0;
+    if (a->menu.y < 0)                      a->menu.y = 0;
+    a->menu.visible = true;
+    a->menu.hover_idx = -1;
+}
+
+static int menu_item_at(App *a, int x, int y) {
+    if (!a->menu.visible) return -1;
+    if (x < a->menu.x || x >= a->menu.x + a->menu.w) return -1;
+    if (y < a->menu.y + MENU_PAD_V || y >= a->menu.y + a->menu.h - MENU_PAD_V) return -1;
+    int idx = (y - a->menu.y - MENU_PAD_V) / MENU_ITEM_H;
+    if (idx < 0 || idx >= (int)a->menu.items.size()) return -1;
+    return idx;
+}
+
+static void draw_context_menu(App *a, cairo_t *cr) {
+    const Chrome &c = chrome(a);
+
+    /* Card with light shadow border. */
+    cairo_set_source_rgba(cr, c.bg[0], c.bg[1], c.bg[2], 0.98);
+    cairo_rectangle(cr, a->menu.x, a->menu.y, a->menu.w, a->menu.h); cairo_fill(cr);
+    cairo_set_source_rgb(cr, c.sep[0], c.sep[1], c.sep[2]);
+    cairo_set_line_width(cr, 1.0);
+    cairo_rectangle(cr, a->menu.x + 0.5, a->menu.y + 0.5, a->menu.w - 1, a->menu.h - 1);
+    cairo_stroke(cr);
+
+    PangoLayout *l = pango_cairo_create_layout(cr);
+    PangoFontDescription *fd = pango_font_description_from_string("Sans 11");
+    pango_layout_set_font_description(l, fd);
+
+    for (size_t i = 0; i < a->menu.items.size(); i++) {
+        const auto &it = a->menu.items[i];
+        int row_y = a->menu.y + MENU_PAD_V + (int)i * MENU_ITEM_H;
+        if ((int)i == a->menu.hover_idx && it.enabled) {
+            cairo_set_source_rgba(cr, c.accent_bg[0], c.accent_bg[1], c.accent_bg[2], c.accent_bg[3]);
+            cairo_rectangle(cr, a->menu.x + 2, row_y, a->menu.w - 4, MENU_ITEM_H);
+            cairo_fill(cr);
+        }
+        pango_layout_set_text(l, it.label.c_str(), -1);
+        int tw_l = 0, th_l = 0;
+        pango_layout_get_pixel_size(l, &tw_l, &th_l);
+        if (it.enabled) cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
+        else            cairo_set_source_rgb(cr, c.dim[0],  c.dim[1],  c.dim[2]);
+        cairo_move_to(cr, a->menu.x + 14, row_y + (MENU_ITEM_H - th_l) / 2.0);
+        pango_cairo_show_layout(cr, l);
+    }
+
+    pango_font_description_free(fd);
+    g_object_unref(l);
+}
+
+/* Execute a menu action. Window pointer needed for redraw / clipboard. */
+static void menu_run(App *a, mdv_window *w, const App::MenuItem &it) {
+    if (!it.enabled) return;
+    switch (it.action) {
+    case App::MenuAction::OpenLink:    open_external_url(it.param); break;
+    case App::MenuAction::CopyLink:    mdv_window_copy_to_clipboard(w, it.param.c_str()); break;
+    case App::MenuAction::Copy: {
+        std::string t = a->con.get_selected_text();
+        if (!t.empty()) mdv_window_copy_to_clipboard(w, t.c_str());
+        break;
+    }
+    case App::MenuAction::SelectAll: {
+        Selection &s = a->con.selection();
+        s.anchor_x = 0; s.anchor_y = 0;
+        s.extent_x = a->doc_w; s.extent_y = a->doc_h;
+        s.active = true; s.dragging = false;
+        break;
+    }
+    case App::MenuAction::Find:        open_search(a, w); break;
+    case App::MenuAction::Reload:      reload_file(a);   break;
+    case App::MenuAction::ToggleDark:  toggle_dark_mode(a, w); break;
+    }
+    mdv_window_request_redraw(w);
+}
+
+/* ========================================================================= */
 
 static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
     App *a = (App*)ud;
@@ -844,6 +1005,9 @@ static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
 
     /* Status bar (always visible). */
     draw_status_bar(a, cr, ww, hh);
+
+    /* Context menu (drawn just below the help overlay) */
+    if (a->menu.visible) draw_context_menu(a, cr);
 
     /* Help overlay (drawn on top of everything). */
     if (a->help_visible) draw_help_overlay(a, cr, ww, hh);
@@ -924,6 +1088,17 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
     App *a = (App*)ud;
     a->mouse_x = x; a->mouse_y = y;
 
+    /* Context menu hover: when visible, takes over cursor handling. */
+    if (a->menu.visible) {
+        int idx = menu_item_at(a, x, y);
+        if (idx != a->menu.hover_idx) {
+            a->menu.hover_idx = idx;
+            mdv_window_request_redraw(w);
+        }
+        mdv_window_set_cursor(w, "default");
+        return;
+    }
+
     /* Sidebar hover tracking */
     if (a->toc_visible && x < SIDEBAR_W && y < a->vp_h) {
         int idx = toc_index_at(a, x, y);
@@ -977,6 +1152,36 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
 static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods, bool pr, int count, void *ud) {
     App *a = (App*)ud;
     int tw = toc_w(a);
+
+    /* Context menu: while it's visible, every press anywhere is consumed by
+       the menu — either running an item or dismissing. */
+    if (a->menu.visible) {
+        if (!pr) return;  /* releases pass through silently */
+        int idx = menu_item_at(a, x, y);
+        if (idx >= 0) {
+            App::MenuItem it = a->menu.items[idx];
+            menu_close(a);
+            menu_run(a, w, it);
+        } else {
+            menu_close(a);
+            mdv_window_request_redraw(w);
+        }
+        return;
+    }
+
+    /* Right-click in the doc area opens the menu. */
+    if (btn == BTN_RIGHT && pr) {
+        if (a->toc_visible && x < SIDEBAR_W) return;       /* not over sidebar */
+        if (a->search_active && y < SEARCH_BAR_H) return;  /* not over search bar */
+        if (y >= a->vp_h)                       return;    /* not over status bar */
+        int x_eff_r = x - tw;
+        int doc_x = (int)((x_eff_r + a->scroll_x) / a->zoom);
+        int doc_y = (int)((y       + a->scroll_y) / a->zoom);
+        menu_build(a, doc_x, doc_y);
+        menu_open_at(a, x, y, mdv_window_width(w));
+        mdv_window_request_redraw(w);
+        return;
+    }
 
     /* Sidebar: click on a TOC entry → scroll to anchor. */
     if (btn == BTN_LEFT && pr && a->toc_visible && x < SIDEBAR_W && y < a->vp_h) {
@@ -1260,6 +1465,7 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
         mdv_window_request_redraw(w);
         return;
     case XKB_KEY_Escape:
+        if (a->menu.visible) { menu_close(a); mdv_window_request_redraw(w); return; }
         if (a->help_visible) { a->help_visible = false; mdv_window_request_redraw(w); return; }
         mdv_window_quit(w); return;
     case XKB_KEY_q:                      mdv_window_quit(w); return;

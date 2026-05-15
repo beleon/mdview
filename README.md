@@ -100,6 +100,7 @@ chmod +x build.sh
 - **Double-click** — select word (drag to extend by words)
 - **Triple-click** — select line (drag to extend by lines)
 - **Click on link** — open in browser, or scroll to in-doc anchor
+- **Right-click** — context menu (Open Link / Copy / Select All / Find / Reload / Toggle Dark)
 - **Title bar drag** — move window (CSD mode)
 
 ## Window Decorations
