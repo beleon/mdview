@@ -110,31 +110,52 @@ static void do_layout(App *a) {
 }
 
 /* Compute new scroll for one axis during zoom.
-   Detects which content edges are touching window borders and pins them,
-   consuming whitespace on the opposite side. When no edge is touching
-   (content floating or filling viewport), uses focus-point zoom. */
+
+   The scroll value is the screen-pixel offset of doc-origin from viewport-origin,
+   negated. `offset = -scroll` is the screen pos of doc x=0 (or y=0).
+
+   Three anchoring strategies, applied in this order:
+
+   (1) Edge pinning on zoom-out: if a content edge sits on a viewport edge,
+       keep it there. The user scrolled to that edge for a reason — peeling
+       content away from it on zoom-out is jarring.
+
+   (2) Focus-point zoom when the cursor is over content: the doc point under
+       the cursor stays under the cursor. This is the classic "zoom to where
+       I'm pointing" behavior.
+
+   (3) Cursor-in-whitespace: there's no doc point under the cursor to anchor
+       to, so we anchor the content's CENTER to its current screen position.
+       The naive focus-point formula here would extrapolate a doc point
+       outside the document, then clamp() would yank content to an edge —
+       which is the "wonky jump" symptom. */
 static double zoom_axis(double scroll, double old_zoom, double new_zoom,
                         int doc_size, int vp, int focus) {
+    double old_cs = doc_size * old_zoom;
+    double new_cs = doc_size * new_zoom;
+    double old_offset = -scroll;
+    const double EPS = 0.5;
     bool zooming_in = new_zoom > old_zoom;
 
-    if (zooming_in) {
-        double doc_pt = (scroll + focus) / old_zoom;
+    /* (1) Edge pinning — only on zoom-out, only if exactly one edge is pinned. */
+    if (!zooming_in) {
+        bool left_at_edge  = std::abs(old_offset) < EPS;
+        bool right_at_edge = std::abs(old_offset + old_cs - vp) < EPS;
+        if (left_at_edge && !right_at_edge)  return 0.0;
+        if (right_at_edge && !left_at_edge)  return new_cs - vp;
+    }
+
+    /* (2) Cursor over content: focus-point zoom. */
+    bool over_content = (focus >= old_offset - EPS && focus <= old_offset + old_cs + EPS);
+    if (over_content) {
+        double doc_pt = (focus - old_offset) / old_zoom;
         return doc_pt * new_zoom - focus;
     }
 
-    double cs = doc_size * old_zoom;
-    double left_ws  = std::max(0.0, -scroll);
-    double right_ws = std::max(0.0, (double)vp - cs + scroll);
-    const double EPS = 0.5;
-
-    if (left_ws < EPS && right_ws < EPS) {
-        double doc_pt = (scroll + focus) / old_zoom;
-        return doc_pt * new_zoom - focus;
-    }
-    if (left_ws < EPS) return scroll;
-    if (right_ws < EPS) return scroll + doc_size * (new_zoom - old_zoom);
-    double doc_pt = (scroll + focus) / old_zoom;
-    return doc_pt * new_zoom - focus;
+    /* (3) Cursor in whitespace: anchor content's center at its current screen position. */
+    double anchor_doc = doc_size / 2.0;
+    double anchor_screen = old_offset + old_cs / 2.0;
+    return anchor_doc * new_zoom - anchor_screen;
 }
 
 static void apply_zoom(App *a, double nz, int fx, int fy) {
