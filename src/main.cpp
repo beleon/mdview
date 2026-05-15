@@ -828,6 +828,7 @@ static void draw_search_bar(App *a, cairo_t *cr, int ww) {
 /* Forward declarations: menu_run calls these but they're defined further
    down in the file. */
 static void toggle_dark_mode(App *a, mdv_window *w);
+static void toggle_toc(App *a, mdv_window *w);
 static void reload_file(void *ud);
 
 static const int MENU_ITEM_H = 26;
