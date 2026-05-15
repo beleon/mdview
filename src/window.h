@@ -42,6 +42,21 @@ void         mdv_window_copy_to_clipboard(mdv_window *win, const char *text);
 void         mdv_window_set_cursor(mdv_window *win, const char *name);
 void         mdv_window_set_tick_enabled(mdv_window *win, bool enabled);
 
+/* Watch an external fd from inside the event loop. cb fires on POLLIN/POLLHUP.
+   Up to MDV_MAX_WATCHED_FDS may be registered at once. Returns 0 on success,
+   -1 if the fd is already watched or the table is full. */
+#define MDV_MAX_WATCHED_FDS 16
+typedef void (*mdv_pollfd_cb)(mdv_window *win, int fd, void *userdata);
+int  mdv_window_watch_fd(mdv_window *win, int fd, mdv_pollfd_cb cb, void *userdata);
+void mdv_window_unwatch_fd(mdv_window *win, int fd);
+
+/* Fire `cb` once, just after the compositor acks the first frame the window
+   draws. Useful for kicking off work that shouldn't delay first paint. If the
+   first frame has already happened by the time you register, `cb` is invoked
+   inline. */
+typedef void (*mdv_after_init_cb)(mdv_window *win, void *userdata);
+void mdv_window_set_after_init(mdv_window *win, mdv_after_init_cb cb, void *userdata);
+
 #ifdef __cplusplus
 }
 #endif

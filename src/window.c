@@ -78,6 +78,13 @@ struct mdv_window {
     struct timespec last_click_time;
     int last_click_x, last_click_y;
     int click_count;
+    /* External fds watched by the event loop (subprocess output, etc.). */
+    struct { int fd; mdv_pollfd_cb cb; void *ud; } watched[MDV_MAX_WATCHED_FDS];
+    int n_watched;
+    /* Fired once after the first frame is acked by the compositor. */
+    bool first_frame_done;
+    mdv_after_init_cb after_init_cb;
+    void *after_init_ud;
     mdv_callbacks cb;
 };
 
@@ -452,7 +459,14 @@ static void rf(mdv_window *w){
     w->frame_cb=wl_surface_frame(w->surface);wl_callback_add_listener(w->frame_cb,&fl,w);
     wl_surface_commit(w->surface);b->busy=true;w->needs_redraw=false;
 }
-static void fd_done(void *d,struct wl_callback *cb,uint32_t t){(void)t;mdv_window *w=d;wl_callback_destroy(cb);w->frame_cb=NULL;if(w->needs_redraw)rf(w);}
+static void fd_done(void *d,struct wl_callback *cb,uint32_t t){
+    (void)t;mdv_window *w=d;wl_callback_destroy(cb);w->frame_cb=NULL;
+    if (!w->first_frame_done) {
+        w->first_frame_done = true;
+        if (w->after_init_cb) w->after_init_cb(w, w->after_init_ud);
+    }
+    if(w->needs_redraw)rf(w);
+}
 
 /* Public API */
 mdv_window *mdv_window_create(const char *title,int width,int height,const mdv_callbacks *cb){
@@ -542,13 +556,22 @@ void mdv_window_destroy(mdv_window *w){
 void mdv_window_run(mdv_window *w){
     w->running=true;rf(w);
     int wl_fd=wl_display_get_fd(w->display);
-    struct pollfd fds[3];
+    struct pollfd fds[3 + MDV_MAX_WATCHED_FDS];
     fds[0].fd=wl_fd;             fds[0].events=POLLIN;
     fds[1].fd=w->timerfd;        fds[1].events=POLLIN;
     fds[2].fd=w->repeat_timerfd; fds[2].events=POLLIN;
     while(w->running){
         wl_display_flush(w->display);
-        int ret=poll(fds,3,w->tick_enabled?TICK_MS:-1);
+        /* Rebuild the watched-fd portion each iteration; the set can change
+           mid-frame as subprocesses start and finish. */
+        int nfds=3;
+        for(int i=0;i<w->n_watched;i++){
+            fds[nfds].fd=w->watched[i].fd;
+            fds[nfds].events=POLLIN;
+            fds[nfds].revents=0;
+            nfds++;
+        }
+        int ret=poll(fds,nfds,w->tick_enabled?TICK_MS:-1);
         if(ret<0)break;
         if(fds[0].revents&POLLIN){if(wl_display_dispatch(w->display)<0)break;}
         else wl_display_dispatch_pending(w->display);
@@ -560,6 +583,19 @@ void mdv_window_run(mdv_window *w){
             uint64_t x; ssize_t r=read(w->repeat_timerfd,&x,sizeof(x)); (void)r;
             if(w->repeat_armed&&w->cb.on_key)
                 w->cb.on_key(w,w->repeat_sym,w->repeat_mods,true,w->cb.userdata);
+        }
+        /* Snapshot watched fds before dispatch — a callback may unwatch its
+           own fd (and shrink the array), so we must work off a stable copy. */
+        struct { int fd; mdv_pollfd_cb cb; void *ud; } snap[MDV_MAX_WATCHED_FDS];
+        int snap_n = w->n_watched;
+        for (int i = 0; i < snap_n; i++) {
+            snap[i].fd = w->watched[i].fd;
+            snap[i].cb = w->watched[i].cb;
+            snap[i].ud = w->watched[i].ud;
+        }
+        for (int i = 0; i < snap_n; i++) {
+            if (fds[3 + i].revents & (POLLIN | POLLHUP | POLLERR))
+                snap[i].cb(w, snap[i].fd, snap[i].ud);
         }
         if(w->needs_redraw&&!w->frame_cb)rf(w);
     }
@@ -588,4 +624,29 @@ void mdv_window_set_cursor(mdv_window *w,const char *name){
     if(!w->cursor_theme)return;struct wl_cursor *c=NULL;
     if(!strcmp(name,"text"))c=w->cursor_text;else if(!strcmp(name,"pointer"))c=w->cursor_pointer;else c=w->cursor_default;
     if(!c)c=w->cursor_default; set_cur(w, c);
+}
+int mdv_window_watch_fd(mdv_window *w, int fd, mdv_pollfd_cb cb, void *ud) {
+    if (!w || fd < 0 || !cb) return -1;
+    if (w->n_watched >= MDV_MAX_WATCHED_FDS) return -1;
+    for (int i = 0; i < w->n_watched; i++) if (w->watched[i].fd == fd) return -1;
+    w->watched[w->n_watched].fd = fd;
+    w->watched[w->n_watched].cb = cb;
+    w->watched[w->n_watched].ud = ud;
+    w->n_watched++;
+    return 0;
+}
+void mdv_window_unwatch_fd(mdv_window *w, int fd) {
+    if (!w) return;
+    for (int i = 0; i < w->n_watched; i++) {
+        if (w->watched[i].fd == fd) {
+            w->watched[i] = w->watched[--w->n_watched];
+            return;
+        }
+    }
+}
+void mdv_window_set_after_init(mdv_window *w, mdv_after_init_cb cb, void *ud) {
+    if (!w) return;
+    w->after_init_cb = cb;
+    w->after_init_ud = ud;
+    if (w->first_frame_done && cb) cb(w, ud);
 }

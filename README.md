@@ -29,6 +29,7 @@ Takes a single CLI argument — a path to a `.md` file — converts it to HTML v
 - Smooth scrolling via mouse wheel
 - Minimal scrollbar overlay
 - Full CSS layout via litehtml (headings, paragraphs, code blocks, tables, lists, blockquotes, horizontal rules)
+- Async syntax highlighting of code blocks via `bat` / `pygmentize` / `highlight` / `source-highlight` (whichever is installed); pass `--no-highlight` or set `MDVIEW_NO_HIGHLIGHT=1` to disable
 
 ## Building
 

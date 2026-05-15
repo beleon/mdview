@@ -15,6 +15,7 @@
 
 #include "litehtml.h"
 #include "cairo_container.h"
+#include "highlight.h"
 extern "C" {
 #include "md4c.h"
 #include "md4c-html.h"
@@ -85,6 +86,10 @@ struct App {
     std::vector<SearchHit> search_matches;
     int current_match = -1;
     bool match_count_dirty = true;  /* re-run find_matches on next render */
+
+    /* Syntax highlighting (async via subprocess) */
+    std::string original_html;   /* pre-highlight, kept for rebuild substitution */
+    mdv::Highlighter highlighter;
 };
 
 static int max_sy(App *a) { return std::max(0, (int)(a->doc_h * a->zoom) - a->vp_h); }
@@ -736,18 +741,81 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
 
 static void on_close(mdv_window *w, void *ud) { (void)ud; mdv_window_quit(w); }
 
+/* Re-create the litehtml document with whatever the highlighter has
+   produced so far, preserving scroll position. Called from the highlight
+   milestone callback after the first batch finishes and again when all
+   blocks have completed. */
+static void rebuild_doc_with_highlight(App *a, mdv_window *w) {
+    std::string new_html = a->highlighter.build_html(a->original_html);
+    if (new_html == a->html) return;  /* nothing to do */
+    a->html = std::move(new_html);
+
+    double sx = a->scroll_x, sy = a->scroll_y;
+    a->doc = litehtml::document::createFromString(a->html.c_str(), &a->con, litehtml::master_css);
+    do_layout(a);
+    a->scroll_x = sx; a->scroll_y = sy;
+    clamp(a);
+    a->match_count_dirty = true;
+    mdv_window_request_redraw(w);
+}
+
+static void on_highlight_milestone(mdv_window *w, void *ud) {
+    rebuild_doc_with_highlight((App*)ud, w);
+}
+
+static void on_first_frame(mdv_window *w, void *ud) {
+    App *a = (App*)ud;
+    if (!a->highlighter.active()) return;
+    auto blocks = mdv::extract_code_blocks(a->original_html);
+    if (blocks.empty()) return;
+    a->highlighter.start(w, std::move(blocks), on_highlight_milestone, a);
+}
+
+static void print_usage(const char *prog) {
+    fprintf(stderr,
+        "Usage: %s [options] <path-to-markdown-file>\n"
+        "\n"
+        "Options:\n"
+        "  --no-highlight   disable syntax highlighting of code blocks\n"
+        "  -h, --help       show this help\n"
+        "\n"
+        "Env: set MDVIEW_NO_HIGHLIGHT to also disable highlighting.\n",
+        prog);
+}
+
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "Usage: mdview <path-to-markdown-file>\n"); return 1; }
-    std::ifstream f(argv[1]);
-    if (!f.is_open()) { fprintf(stderr, "Error: cannot open '%s'\n", argv[1]); return 1; }
+    bool no_highlight = false;
+    const char *file = nullptr;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--no-highlight") == 0) { no_highlight = true; }
+        else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]); return 0;
+        }
+        else if (argv[i][0] == '-') {
+            fprintf(stderr, "Unknown option: %s\n", argv[i]);
+            print_usage(argv[0]); return 1;
+        }
+        else if (!file) { file = argv[i]; }
+        else {
+            fprintf(stderr, "Extra argument: %s\n", argv[i]);
+            print_usage(argv[0]); return 1;
+        }
+    }
+    if (!file) { print_usage(argv[0]); return 1; }
+
+    std::ifstream f(file);
+    if (!f.is_open()) { fprintf(stderr, "Error: cannot open '%s'\n", file); return 1; }
     std::ostringstream ss; ss << f.rdbuf(); f.close();
 
     App app;
     app.html = md2html(ss.str());
-    { std::string fp = argv[1]; auto sl = fp.rfind('/');
+    app.original_html = app.html;  /* snapshot for highlight substitution */
+    { std::string fp = file; auto sl = fp.rfind('/');
       app.con.set_base_dir(sl != std::string::npos ? fp.substr(0, sl) : "."); }
     app.doc = litehtml::document::createFromString(app.html.c_str(), &app.con, litehtml::master_css);
     app.pinch_base_zoom = 1.0;
+
+    app.highlighter.set_tool(mdv::detect_tool(no_highlight));
 
     mdv_callbacks cb = {};
     cb.on_redraw = on_redraw; cb.on_resize = on_resize; cb.on_scroll = on_scroll;
@@ -757,9 +825,13 @@ int main(int argc, char **argv) {
     cb.on_tick = on_tick; cb.on_pinch = on_pinch;
     cb.userdata = &app;
 
-    std::string title = std::string("mdview - ") + argv[1];
+    std::string title = std::string("mdview - ") + file;
     mdv_window *w = mdv_window_create(title.c_str(), 900, 700, &cb);
     if (!w) { fprintf(stderr, "Error: cannot create Wayland window\n"); return 1; }
-    do_layout(&app); mdv_window_run(w); mdv_window_destroy(w);
+    do_layout(&app);
+    mdv_window_set_after_init(w, on_first_frame, &app);
+    mdv_window_run(w);
+    app.highlighter.stop();   /* unwatch & kill children while win is still alive */
+    mdv_window_destroy(w);
     return 0;
 }
