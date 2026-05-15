@@ -30,6 +30,11 @@ Takes a single CLI argument — a path to a `.md` file — converts it to HTML v
 - Minimal scrollbar overlay
 - Full CSS layout via litehtml (headings, paragraphs, code blocks, tables, lists, blockquotes, horizontal rules)
 - Async syntax highlighting of code blocks via `bat` / `pygmentize` / `highlight` / `source-highlight` (whichever is installed); pass `--no-highlight` or set `MDVIEW_NO_HIGHLIGHT=1` to disable
+- Click links to open in your default browser (`xdg-open`), or in-document `#anchor` links to scroll to that heading
+- Live reload on file change (inotify); disable with `--no-reload`
+- Persistent zoom + window size between sessions (`~/.config/mdview/state`)
+- Help overlay with **F1** or **?**
+- Status bar showing filename, scroll %, zoom %, and highlight progress
 
 ## Building
 
@@ -78,7 +83,8 @@ chmod +x build.sh
 | `Ctrl++` / `Ctrl+=` | Zoom in |
 | `Ctrl+-` | Zoom out |
 | `Ctrl+0` | Reset zoom |
-| `q` / `Escape` | Quit |
+| `F1` / `?` | Toggle help overlay |
+| `q` / `Escape` | Quit (Esc also closes help / find) |
 
 ### Mouse
 
@@ -89,6 +95,7 @@ chmod +x build.sh
 - **Click + drag** — select text
 - **Double-click** — select word (drag to extend by words)
 - **Triple-click** — select line (drag to extend by lines)
+- **Click on link** — open in browser, or scroll to in-doc anchor
 - **Title bar drag** — move window (CSD mode)
 
 ## Window Decorations

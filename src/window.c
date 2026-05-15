@@ -603,6 +603,8 @@ void mdv_window_run(mdv_window *w){
 void mdv_window_request_redraw(mdv_window *w){w->needs_redraw=true;}
 int mdv_window_width(mdv_window *w){return cw(w);}
 int mdv_window_height(mdv_window *w){return ch(w);}
+int mdv_window_surface_width(mdv_window *w){return w->surf_width;}
+int mdv_window_surface_height(mdv_window *w){return w->surf_height;}
 void mdv_window_quit(mdv_window *w){w->running=false;}
 void mdv_window_set_tick_enabled(mdv_window *w,bool en){
     w->tick_enabled=en;

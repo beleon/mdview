@@ -16,6 +16,8 @@
 #include "litehtml.h"
 #include "cairo_container.h"
 #include "highlight.h"
+#include "state.h"
+#include "livereload.h"
 extern "C" {
 #include "md4c.h"
 #include "md4c-html.h"
@@ -46,6 +48,89 @@ static std::string md2html(const std::string &md) {
         "</style></head><body>" + body + "</body></html>";
 }
 
+/* GitHub-ish slug: lowercase, alphanumerics kept, runs of other chars
+   collapse to a single '-'. Used to give headings stable #ids for
+   in-document anchor links. */
+static std::string slugify(const std::string &s) {
+    std::string out;
+    out.reserve(s.size());
+    bool prev_dash = false;
+    for (char c : s) {
+        unsigned char u = (unsigned char)c;
+        if (isalnum(u)) {
+            out += (char)tolower(u);
+            prev_dash = false;
+        } else if (u >= 0x80) {
+            out += c;          /* keep multibyte UTF-8 verbatim */
+            prev_dash = false;
+        } else {
+            if (!prev_dash && !out.empty()) out += '-';
+            prev_dash = true;
+        }
+    }
+    while (!out.empty() && out.back() == '-') out.pop_back();
+    return out;
+}
+
+/* Walk the HTML string and inject id="slug-of-text" into each <hN> opening
+   tag that doesn't already have one. Duplicate slugs get -2, -3, ... */
+static std::string add_heading_ids(const std::string &html) {
+    std::string out;
+    out.reserve(html.size() + 128);
+    std::map<std::string, int> seen;
+    size_t pos = 0;
+    while (pos < html.size()) {
+        if (pos + 3 < html.size() &&
+            html[pos] == '<' && html[pos+1] == 'h' &&
+            html[pos+2] >= '1' && html[pos+2] <= '6' &&
+            (html[pos+3] == '>' || html[pos+3] == ' ')) {
+            char level = html[pos+2];
+            char close = '>';
+            size_t open_end = html.find(close, pos);
+            if (open_end == std::string::npos) { out += html[pos++]; continue; }
+            std::string opening = html.substr(pos, open_end - pos + 1);
+            bool has_id = opening.find(" id=") != std::string::npos
+                       || opening.find("\tid=") != std::string::npos;
+            std::string end_tag = "</h"; end_tag += level; end_tag += ">";
+            size_t close_pos = html.find(end_tag, open_end + 1);
+            if (close_pos == std::string::npos) { out += html[pos++]; continue; }
+            std::string inner = html.substr(open_end + 1, close_pos - open_end - 1);
+
+            if (!has_id) {
+                /* Strip nested tags + decode entities for slug input. */
+                std::string text;
+                bool in_tag = false;
+                for (char c : inner) {
+                    if (c == '<') in_tag = true;
+                    else if (c == '>') in_tag = false;
+                    else if (!in_tag) text += c;
+                }
+                text = mdv::html_decode(text);
+                std::string slug = slugify(text);
+                if (!slug.empty()) {
+                    int n = ++seen[slug];
+                    std::string final_slug = (n == 1) ? slug : (slug + "-" + std::to_string(n));
+                    /* Insert id attribute just before the closing '>'. */
+                    out.append(opening, 0, opening.size() - 1);
+                    out += " id=\"";
+                    out += final_slug;
+                    out += "\">";
+                } else {
+                    out += opening;
+                }
+            } else {
+                out += opening;
+            }
+            out += inner;
+            out += end_tag;
+            pos = close_pos + end_tag.size();
+        } else {
+            out += html[pos++];
+        }
+    }
+    return out;
+}
+
 /* ========================================================================= */
 
 static constexpr int    SB_W = 8;
@@ -54,6 +139,7 @@ static constexpr int    AUTOSCROLL_SPD = 8;
 static constexpr double KEY_SPD = 4.0, PAGE_SPD = 30.0;
 static constexpr double ZOOM_MIN = 0.25, ZOOM_MAX = 5.0, ZOOM_STEP = 0.1;
 static constexpr int    SEARCH_BAR_H = 36;
+static constexpr int    STATUS_H = 22;
 
 /* ========================================================================= */
 
@@ -90,6 +176,17 @@ struct App {
     /* Syntax highlighting (async via subprocess) */
     std::string original_html;   /* pre-highlight, kept for rebuild substitution */
     mdv::Highlighter highlighter;
+
+    /* Window handle (set after creation) */
+    mdv_window *win = nullptr;
+
+    /* Help overlay */
+    bool help_visible = false;
+
+    /* File + live reload */
+    std::string file_path;
+    std::string file_basename;
+    mdv::LiveReloader live_reloader;
 };
 
 static int max_sy(App *a) { return std::max(0, (int)(a->doc_h * a->zoom) - a->vp_h); }
@@ -241,6 +338,160 @@ static void open_search(App *a, mdv_window *w) {
     mdv_window_request_redraw(w);
 }
 
+static void draw_status_bar(App *a, cairo_t *cr, int ww, int hh) {
+    int top = hh - STATUS_H;
+    if (top < 0) return;
+    cairo_set_source_rgba(cr, 0.97, 0.97, 0.97, 1.0);
+    cairo_rectangle(cr, 0, top, ww, STATUS_H); cairo_fill(cr);
+    cairo_set_source_rgba(cr, 0.55, 0.55, 0.55, 1.0);
+    cairo_rectangle(cr, 0, top, ww, 1); cairo_fill(cr);
+
+    PangoLayout *l = pango_cairo_create_layout(cr);
+    PangoFontDescription *fd = pango_font_description_from_string("Sans 10");
+    pango_layout_set_font_description(l, fd);
+
+    /* Left: filename */
+    pango_layout_set_text(l, a->file_basename.c_str(), -1);
+    int tw = 0, th = 0;
+    pango_layout_get_pixel_size(l, &tw, &th);
+    cairo_set_source_rgb(cr, 0.30, 0.30, 0.30);
+    cairo_move_to(cr, 10, top + (STATUS_H - th) / 2.0);
+    pango_cairo_show_layout(cr, l);
+
+    /* Right: scroll % · zoom % (+ highlight indicator while jobs are running) */
+    int max_y = std::max(1, (int)(a->doc_h * a->zoom) - a->vp_h);
+    int scroll_pct = (a->doc_h > 0 && a->doc_h * a->zoom > a->vp_h)
+                     ? (int)((a->scroll_y / max_y) * 100.0 + 0.5)
+                     : 100;
+    if (scroll_pct < 0)   scroll_pct = 0;
+    if (scroll_pct > 100) scroll_pct = 100;
+    int zoom_pct = (int)(a->zoom * 100.0 + 0.5);
+
+    std::string right;
+    if (a->highlighter.active() && !a->highlighter.all_done())
+        right = "highlighting… · ";
+    right += std::to_string(scroll_pct) + "%  · ";
+    right += std::to_string(zoom_pct)   + "%";
+    pango_layout_set_text(l, right.c_str(), -1);
+    int rw = 0, rh = 0;
+    pango_layout_get_pixel_size(l, &rw, &rh);
+    cairo_move_to(cr, ww - rw - 10, top + (STATUS_H - rh) / 2.0);
+    pango_cairo_show_layout(cr, l);
+
+    pango_font_description_free(fd);
+    g_object_unref(l);
+}
+
+static void draw_help_overlay(App *a, cairo_t *cr, int ww, int hh) {
+    (void)a;
+    /* Translucent dim over the whole window. */
+    cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.40);
+    cairo_rectangle(cr, 0, 0, ww, hh); cairo_fill(cr);
+
+    static const char *lines[] = {
+        "  Keyboard",
+        "    j / ↓                 Scroll down",
+        "    k / ↑                 Scroll up",
+        "    Space / PageDown      Page down",
+        "    Shift+Space / PgUp    Page up",
+        "    g / Home              Top of document",
+        "    G / End               Bottom of document",
+        "    Ctrl++ / Ctrl+=       Zoom in",
+        "    Ctrl+-                Zoom out",
+        "    Ctrl+0                Reset zoom",
+        "    Ctrl+C                Copy selection",
+        "    Ctrl+A                Select all",
+        "    Ctrl+F                Find in document",
+        "      Enter / F3          Next match",
+        "      Shift+Enter / S+F3  Previous match",
+        "      Alt+C               Toggle case-sensitive",
+        "      Ctrl+Backspace      Delete word",
+        "      Esc                 Close find",
+        "    F1 / ?                Toggle this help",
+        "    q / Esc               Quit",
+        "",
+        "  Mouse",
+        "    Wheel                 Scroll",
+        "    Shift+Wheel           Horizontal scroll",
+        "    Ctrl+Wheel            Zoom",
+        "    Pinch                 Zoom (touchpad)",
+        "    Click + drag          Select text",
+        "    Double-click + drag   Select by word",
+        "    Triple-click + drag   Select by line",
+        "    Click on link         Follow link",
+    };
+    const int n_lines = (int)(sizeof(lines) / sizeof(lines[0]));
+
+    /* Approximate panel dimensions; cap to fit viewport. */
+    int panel_w = 540, panel_h = 24 + 18 * n_lines + 24;
+    if (panel_w > ww - 40) panel_w = ww - 40;
+    if (panel_h > hh - 40) panel_h = hh - 40;
+    int x = (ww - panel_w) / 2, y = (hh - panel_h) / 2;
+
+    /* Card. */
+    cairo_set_source_rgba(cr, 0.99, 0.99, 0.99, 0.97);
+    cairo_rectangle(cr, x, y, panel_w, panel_h); cairo_fill(cr);
+    cairo_set_source_rgba(cr, 0.50, 0.50, 0.50, 1.0);
+    cairo_set_line_width(cr, 1.0);
+    cairo_rectangle(cr, x + 0.5, y + 0.5, panel_w - 1, panel_h - 1); cairo_stroke(cr);
+
+    PangoLayout *l = pango_cairo_create_layout(cr);
+    PangoFontDescription *fd = pango_font_description_from_string("Monospace 10");
+    pango_layout_set_font_description(l, fd);
+    cairo_set_source_rgb(cr, 0.10, 0.10, 0.10);
+    int line_y = y + 18;
+    for (int i = 0; i < n_lines; i++) {
+        pango_layout_set_text(l, lines[i], -1);
+        cairo_move_to(cr, x + 20, line_y);
+        pango_cairo_show_layout(cr, l);
+        line_y += 18;
+    }
+    pango_font_description_free(fd);
+    g_object_unref(l);
+}
+
+/* Walk the litehtml tree looking for an element whose id="..." attribute
+   matches. Returns null if not found. */
+static litehtml::element::ptr find_by_id(litehtml::element::ptr el, const std::string &id) {
+    if (!el) return nullptr;
+    const char *cur = el->get_attr("id");
+    if (cur && id == cur) return el;
+    for (const auto &child : el->children()) {
+        auto found = find_by_id(child, id);
+        if (found) return found;
+    }
+    return nullptr;
+}
+
+static void scroll_to_anchor(App *a, const std::string &id) {
+    if (!a->doc) return;
+    auto el = find_by_id(a->doc->root(), id);
+    if (!el) return;
+    litehtml::position p = el->get_placement();
+    a->scroll_y = (double)p.y * a->zoom;
+    clamp(a);
+}
+
+/* Spawn xdg-open <url> detached. Double-fork pattern so the grandchild is
+   re-parented to init and we don't need to waitpid it later. */
+static void open_external_url(const std::string &url) {
+    pid_t pid = fork();
+    if (pid < 0) return;
+    if (pid == 0) {
+        pid_t pid2 = fork();
+        if (pid2 == 0) {
+            /* Detach from controlling terminal so xdg-open can manage its
+               own children (browser etc.). */
+            setsid();
+            execlp("xdg-open", "xdg-open", url.c_str(), (char*)NULL);
+            _exit(127);
+        }
+        _exit(0);
+    }
+    /* Parent: reap the immediate child to avoid a zombie. */
+    waitpid(pid, NULL, 0);
+}
+
 static void draw_search_bar(App *a, cairo_t *cr, int ww) {
     int bh = SEARCH_BAR_H;
 
@@ -329,10 +580,12 @@ static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
     a->con.begin_record();
 
     cairo_save(cr);
-    cairo_rectangle(cr, 0, 0, ww, hh); cairo_clip(cr);
+    /* Clip to the content area so document content doesn't bleed under the
+       status bar at the bottom of the window. */
+    cairo_rectangle(cr, 0, 0, ww, a->vp_h); cairo_clip(cr);
     cairo_scale(cr, a->zoom, a->zoom);
 
-    int rw = (int)(ww / a->zoom), rh = (int)(hh / a->zoom);
+    int rw = (int)(ww / a->zoom), rh = (int)(a->vp_h / a->zoom);
     litehtml::position clip(0, 0, rw, rh);
     a->con.set_render_cr(cr);
     a->doc->draw((litehtml::uint_ptr)cr, -dsx, -dsy, &clip);
@@ -365,10 +618,11 @@ static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
         cairo_rectangle(cr, x, sv.pos, SB_W - 2, sv.len); cairo_fill(cr);
     }
 
-    /* Horizontal scrollbar */
+    /* Horizontal scrollbar — sits just above the status bar, not at the
+       window bottom edge. */
     SBG sh = sbh(a);
     if (sh.vis) {
-        double y = hh - SB_W;
+        double y = a->vp_h - SB_W;
         cairo_set_source_rgba(cr, 0, 0, 0, 0.05);
         cairo_rectangle(cr, 0, y, sh.track, SB_W - 2); cairo_fill(cr);
         cairo_set_source_rgba(cr, 0, 0, 0, a->sb_h_drag ? 0.45 : 0.25);
@@ -377,10 +631,19 @@ static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
 
     /* Search bar overlay (drawn last, in viewport coords) */
     if (a->search_active) draw_search_bar(a, cr, ww);
+
+    /* Status bar (always visible). */
+    draw_status_bar(a, cr, ww, hh);
+
+    /* Help overlay (drawn on top of everything). */
+    if (a->help_visible) draw_help_overlay(a, cr, ww, hh);
 }
 
 static void on_resize(mdv_window *w, int ww, int hh, void *ud) {
-    App *a = (App*)ud; a->vp_w = ww; a->vp_h = hh;
+    App *a = (App*)ud;
+    a->vp_w = ww;
+    a->vp_h = hh - STATUS_H;  /* status bar always occupies the bottom strip */
+    if (a->vp_h < 0) a->vp_h = 0;
     do_layout(a); mdv_window_request_redraw(w);
 }
 
@@ -452,11 +715,13 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
         mdv_window_request_redraw(w); return;
     }
 
-    /* Cursor: arrow over scrollbars and search bar, text elsewhere */
+    /* Cursor: arrow over scrollbars, search bar, and status bar; text elsewhere. */
     { SBG sv = sbv(a); SBG sh = sbh(a);
-      bool over_sb = (sv.vis && x >= a->vp_w - SB_W) || (sh.vis && y >= a->vp_h - SB_W);
+      bool over_sb = (sv.vis && x >= a->vp_w - SB_W)
+                  || (sh.vis && y >= a->vp_h - SB_W && y < a->vp_h);
       bool over_search_bar = a->search_active && y < SEARCH_BAR_H;
-      mdv_window_set_cursor(w, (over_sb || over_search_bar) ? "default" : "text"); }
+      bool over_status_bar = y >= a->vp_h;
+      mdv_window_set_cursor(w, (over_sb || over_search_bar || over_status_bar) ? "default" : "text"); }
 
     Selection &sel = a->con.selection();
     if (sel.dragging) {
@@ -483,15 +748,17 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
                 else { double mt = a->vp_h - sv.len; if (mt > 0) { a->scroll_y = std::clamp((y - sv.len/2.0) / mt, 0.0, 1.0) * max_sy(a); clamp(a); } }
                 mdv_window_request_redraw(w); return;
             }
-            /* Horizontal scrollbar */
+            /* Horizontal scrollbar (only the strip just above the status bar) */
             SBG sh = sbh(a);
-            if (sh.vis && y >= a->vp_h - SB_W) {
+            if (sh.vis && y >= a->vp_h - SB_W && y < a->vp_h) {
                 if (x >= sh.pos && x <= sh.pos + sh.len) { a->sb_h_drag = true; a->sb_drag_off = x - sh.pos; }
                 else { double mt = a->vp_w - sh.len; if (mt > 0) { a->scroll_x = std::clamp((x - sh.len/2.0) / mt, 0.0, 1.0) * max_sx(a); clamp(a); } }
                 mdv_window_request_redraw(w); return;
             }
             /* Click in search bar: keep focus, don't start selection */
             if (a->search_active && y < SEARCH_BAR_H) return;
+            /* Click in status bar: nothing (yet) */
+            if (y >= a->vp_h) return;
 
             Selection &sel = a->con.selection();
             int dx = (int)((x + a->scroll_x) / a->zoom), dy = (int)((y + a->scroll_y) / a->zoom);
@@ -735,7 +1002,14 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
         start_ks(a, w, (mods & MDV_MOD_SHIFT) ? -PAGE_SPD : PAGE_SPD); return;
     case XKB_KEY_Home: case XKB_KEY_g:  a->scroll_y = 0; mdv_window_request_redraw(w); return;
     case XKB_KEY_End:  case XKB_KEY_G:  a->scroll_y = max_sy(a); mdv_window_request_redraw(w); return;
-    case XKB_KEY_q: case XKB_KEY_Escape: mdv_window_quit(w); return;
+    case XKB_KEY_F1: case XKB_KEY_question:
+        a->help_visible = !a->help_visible;
+        mdv_window_request_redraw(w);
+        return;
+    case XKB_KEY_Escape:
+        if (a->help_visible) { a->help_visible = false; mdv_window_request_redraw(w); return; }
+        mdv_window_quit(w); return;
+    case XKB_KEY_q:                      mdv_window_quit(w); return;
     }
 }
 
@@ -763,12 +1037,45 @@ static void on_highlight_milestone(mdv_window *w, void *ud) {
     rebuild_doc_with_highlight((App*)ud, w);
 }
 
-static void on_first_frame(mdv_window *w, void *ud) {
-    App *a = (App*)ud;
+static void start_highlight(App *a, mdv_window *w) {
     if (!a->highlighter.active()) return;
     auto blocks = mdv::extract_code_blocks(a->original_html);
     if (blocks.empty()) return;
     a->highlighter.start(w, std::move(blocks), on_highlight_milestone, a);
+}
+
+static void on_first_frame(mdv_window *w, void *ud) {
+    start_highlight((App*)ud, w);
+}
+
+/* Re-read the source file from disk and rebuild everything. Called by
+   LiveReloader when the file changes on disk. Preserves scroll, search
+   state, selection. */
+static void reload_file(void *ud) {
+    App *a = (App*)ud;
+    std::ifstream f(a->file_path);
+    if (!f.is_open()) return;
+    std::ostringstream ss; ss << f.rdbuf(); f.close();
+
+    a->highlighter.stop();
+
+    std::string new_html = add_heading_ids(md2html(ss.str()));
+    if (new_html == a->original_html) return;  /* same content, no change */
+
+    a->original_html = new_html;
+    a->html = std::move(new_html);
+
+    double sx = a->scroll_x, sy = a->scroll_y;
+    a->doc = litehtml::document::createFromString(a->html.c_str(), &a->con, litehtml::master_css);
+    do_layout(a);
+    a->scroll_x = sx; a->scroll_y = sy; clamp(a);
+    a->match_count_dirty = true;
+
+    /* Re-detect tool (the user may have installed one mid-session) and kick
+       off highlight again. */
+    if (a->highlighter.tool() != mdv::HLTool::None) start_highlight(a, a->win);
+
+    mdv_window_request_redraw(a->win);
 }
 
 static void print_usage(const char *prog) {
@@ -777,17 +1084,20 @@ static void print_usage(const char *prog) {
         "\n"
         "Options:\n"
         "  --no-highlight   disable syntax highlighting of code blocks\n"
+        "  --no-reload      disable live-reload on file change\n"
         "  -h, --help       show this help\n"
         "\n"
-        "Env: set MDVIEW_NO_HIGHLIGHT to also disable highlighting.\n",
+        "Env: MDVIEW_NO_HIGHLIGHT also disables highlighting.\n",
         prog);
 }
 
 int main(int argc, char **argv) {
     bool no_highlight = false;
+    bool no_reload    = false;
     const char *file = nullptr;
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--no-highlight") == 0) { no_highlight = true; }
+        if      (strcmp(argv[i], "--no-highlight") == 0) no_highlight = true;
+        else if (strcmp(argv[i], "--no-reload")    == 0) no_reload = true;
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]); return 0;
         }
@@ -795,7 +1105,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             print_usage(argv[0]); return 1;
         }
-        else if (!file) { file = argv[i]; }
+        else if (!file) file = argv[i];
         else {
             fprintf(stderr, "Extra argument: %s\n", argv[i]);
             print_usage(argv[0]); return 1;
@@ -807,15 +1117,33 @@ int main(int argc, char **argv) {
     if (!f.is_open()) { fprintf(stderr, "Error: cannot open '%s'\n", file); return 1; }
     std::ostringstream ss; ss << f.rdbuf(); f.close();
 
+    mdv::State persisted = mdv::load_state();
+
     App app;
-    app.html = md2html(ss.str());
-    app.original_html = app.html;  /* snapshot for highlight substitution */
-    { std::string fp = file; auto sl = fp.rfind('/');
-      app.con.set_base_dir(sl != std::string::npos ? fp.substr(0, sl) : "."); }
+    app.file_path = file;
+    { auto sl = app.file_path.find_last_of('/');
+      app.file_basename = (sl == std::string::npos) ? app.file_path : app.file_path.substr(sl + 1); }
+    app.zoom            = persisted.zoom;
+    app.case_sensitive  = persisted.case_sensitive;
+    app.html            = add_heading_ids(md2html(ss.str()));
+    app.original_html   = app.html;
+    { auto sl = app.file_path.find_last_of('/');
+      app.con.set_base_dir(sl != std::string::npos ? app.file_path.substr(0, sl) : "."); }
     app.doc = litehtml::document::createFromString(app.html.c_str(), &app.con, litehtml::master_css);
     app.pinch_base_zoom = 1.0;
 
     app.highlighter.set_tool(mdv::detect_tool(no_highlight));
+
+    /* Anchor clicks: # → in-doc scroll; everything else → xdg-open. */
+    app.con.set_anchor_click_cb([&app](const std::string &url) {
+        if (url.empty()) return;
+        if (url[0] == '#') {
+            scroll_to_anchor(&app, url.substr(1));
+            if (app.win) mdv_window_request_redraw(app.win);
+        } else {
+            open_external_url(url);
+        }
+    });
 
     mdv_callbacks cb = {};
     cb.on_redraw = on_redraw; cb.on_resize = on_resize; cb.on_scroll = on_scroll;
@@ -825,13 +1153,30 @@ int main(int argc, char **argv) {
     cb.on_tick = on_tick; cb.on_pinch = on_pinch;
     cb.userdata = &app;
 
+    int win_w = std::max(200, persisted.window_width);
+    int win_h = std::max(200, persisted.window_height);
     std::string title = std::string("mdview - ") + file;
-    mdv_window *w = mdv_window_create(title.c_str(), 900, 700, &cb);
+    mdv_window *w = mdv_window_create(title.c_str(), win_w, win_h, &cb);
     if (!w) { fprintf(stderr, "Error: cannot create Wayland window\n"); return 1; }
+    app.win = w;
     do_layout(&app);
+
     mdv_window_set_after_init(w, on_first_frame, &app);
+    if (!no_reload) app.live_reloader.start(w, app.file_path, reload_file, &app);
+
     mdv_window_run(w);
-    app.highlighter.stop();   /* unwatch & kill children while win is still alive */
+
+    /* Snapshot state before tearing down. */
+    mdv::State out;
+    out.zoom           = app.zoom;
+    out.window_width   = mdv_window_surface_width(w);
+    out.window_height  = mdv_window_surface_height(w);
+    out.dark_mode      = persisted.dark_mode;   /* unchanged until batch 2 */
+    out.case_sensitive = app.case_sensitive;
+    mdv::save_state(out);
+
+    app.live_reloader.stop();
+    app.highlighter.stop();
     mdv_window_destroy(w);
     return 0;
 }

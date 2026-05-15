@@ -35,8 +35,10 @@ mdv_window *mdv_window_create(const char *title, int width, int height, const md
 void         mdv_window_destroy(mdv_window *win);
 void         mdv_window_run(mdv_window *win);
 void         mdv_window_request_redraw(mdv_window *win);
-int          mdv_window_width(mdv_window *win);
-int          mdv_window_height(mdv_window *win);
+int          mdv_window_width(mdv_window *win);         /* viewport content w */
+int          mdv_window_height(mdv_window *win);        /* viewport content h (minus CSD title bar) */
+int          mdv_window_surface_width(mdv_window *win); /* full wl_surface w */
+int          mdv_window_surface_height(mdv_window *win);/* full wl_surface h (incl. CSD title bar) */
 void         mdv_window_quit(mdv_window *win);
 void         mdv_window_copy_to_clipboard(mdv_window *win, const char *text);
 void         mdv_window_set_cursor(mdv_window *win, const char *name);

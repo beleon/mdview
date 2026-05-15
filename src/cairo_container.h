@@ -13,6 +13,7 @@
 #include <map>
 #include <algorithm>
 #include <cctype>
+#include <functional>
 
 struct CairoFont {
     PangoFontDescription *desc;
@@ -412,7 +413,10 @@ public:
     void set_caption(const char*)override{}
     void set_base_url(const char*)override{}
     void link(const std::shared_ptr<litehtml::document>&,const litehtml::element::ptr&)override{}
-    void on_anchor_click(const char*,const litehtml::element::ptr&)override{}
+    void on_anchor_click(const char *url, const litehtml::element::ptr&)override{
+        if (url && anchor_click_cb_) anchor_click_cb_(std::string(url));
+    }
+    void set_anchor_click_cb(std::function<void(const std::string&)> cb){anchor_click_cb_=std::move(cb);}
     void on_mouse_event(const litehtml::element::ptr&,litehtml::mouse_event)override{}
     void set_cursor(const char*)override{}
     void import_css(litehtml::string&,const litehtml::string&,litehtml::string&)override{}
@@ -450,4 +454,5 @@ private:
     cairo_t*rcr_=nullptr;
     std::vector<TextSpan>spans_;Selection sel_;
     std::map<std::string,CachedImage*>imgs_;
+    std::function<void(const std::string&)> anchor_click_cb_;
 };
