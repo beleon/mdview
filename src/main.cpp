@@ -315,7 +315,7 @@ static void do_layout(App *a) {
     a->con.set_viewport(a->vp_w, a->vp_h);
     a->doc->render(a->vp_w, litehtml::render_all);
     a->doc_w = a->doc->width();
-    a->doc_h = a->doc->height() + 40;
+    a->doc_h = a->doc->height();
     a->match_count_dirty = true;  /* layout changed → positions invalid */
     clamp(a);
 }
