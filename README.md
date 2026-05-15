@@ -15,7 +15,7 @@ Takes a single CLI argument — a path to a `.md` file — converts it to HTML v
                                                          (window, input, shared memory)
 ```
 
-**1,440 lines of our code. 1.3 MB binary. Zero frameworks.**
+**~3,800 lines of our code. Zero frameworks.**
 
 ## Features
 
