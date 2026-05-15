@@ -172,10 +172,12 @@ public:
         return nullptr;
     }
 
-    /* Returns the word boundary at (doc_x, doc_y) where a word is a maximal
-       UTF-8-aware run of non-whitespace characters within a single TextSpan.
-       Returns found=false if the click is not over text, or lands on
-       whitespace inside a span. */
+    /* Returns the word boundary at (doc_x, doc_y). Matches browser behavior:
+       characters fall into three classes — Word (alphanumeric / underscore /
+       non-ASCII), Punct (everything else printable), and Space. A "word" is
+       a maximal run of the SAME class within a single TextSpan, so
+       double-clicking "hello," on the comma selects "," and double-clicking
+       on "hello" selects "hello". Lands on Space → not found. */
     TextRange find_word_at(int doc_x, int doc_y) const {
         TextRange r;
         const TextSpan *sp = find_span_at(doc_x, doc_y);
@@ -186,21 +188,22 @@ public:
         int idx = x_to_index(*sp, doc_x);
         if (idx >= n) idx = n - 1;
         if (idx < 0) idx = 0;
-        if (isspace((unsigned char)t[idx])) return r;
+        /* Align idx to a codepoint leading byte. */
+        while (idx > 0 && (((unsigned char)t[idx]) & 0xC0) == 0x80) idx--;
 
-        /* Walk left to a whitespace (or start) — landing on the first byte
-           of a non-whitespace codepoint. */
+        CharClass cls = classify((unsigned char)t[idx]);
+        if (cls == CharClass::Space) return r;
+
         int start = idx;
         while (start > 0) {
             int prev = start - 1;
             while (prev > 0 && (((unsigned char)t[prev]) & 0xC0) == 0x80) prev--;
-            if (isspace((unsigned char)t[prev])) break;
+            if (classify((unsigned char)t[prev]) != cls) break;
             start = prev;
         }
-        /* Walk right past the codepoint at idx, stopping at whitespace. */
         int end = idx;
         while (end < n) {
-            if (isspace((unsigned char)t[end])) break;
+            if (classify((unsigned char)t[end]) != cls) break;
             int next = end + 1;
             while (next < n && (((unsigned char)t[next]) & 0xC0) == 0x80) next++;
             end = next;
@@ -242,18 +245,19 @@ public:
         return r;
     }
 
-    /* Case-insensitive substring search over recorded TextSpans.
-       Returns hits in document coordinates, sorted top-to-bottom, left-to-right.
-       Per-span search — multi-word matches that cross formatting boundaries
-       (e.g. "**foo** bar" as two spans) won't match. */
-    std::vector<SearchHit> find_matches(const std::string &query)const{
+    /* Substring search over recorded TextSpans. When case_sensitive is false,
+       both query and span text are lowercased (ASCII only) before comparison.
+       Returns hits in document coordinates, sorted top-to-bottom,
+       left-to-right. Per-span search — multi-word matches that cross
+       formatting boundaries (e.g. "**foo** bar" as two spans) won't match. */
+    std::vector<SearchHit> find_matches(const std::string &query, bool case_sensitive)const{
         std::vector<SearchHit> r;
         if(query.empty()||spans_.empty())return r;
         std::string q=query;
-        for(auto&c:q)c=(char)tolower((unsigned char)c);
+        if(!case_sensitive) for(auto&c:q)c=(char)tolower((unsigned char)c);
         for(const TextSpan&sp:spans_){
             std::string t=sp.text;
-            for(auto&c:t)c=(char)tolower((unsigned char)c);
+            if(!case_sensitive) for(auto&c:t)c=(char)tolower((unsigned char)c);
             size_t pos=0;
             while((pos=t.find(q,pos))!=std::string::npos){
                 int x1=index_to_x(sp,(int)pos);
@@ -424,6 +428,15 @@ public:
     litehtml::string resolve_color(const litehtml::string&)const override{return{};}
 
 private:
+    enum class CharClass { Space, Word, Punct };
+    /* For UTF-8 multibyte chars, every byte (including continuation bytes
+       0x80-0xBF) is >= 0x80 and classified as Word — which is what we want,
+       since the typical use is letters in scripts beyond ASCII. */
+    static CharClass classify(unsigned char c) {
+        if (isspace(c))                            return CharClass::Space;
+        if (isalnum(c) || c == '_' || c >= 0x80)   return CharClass::Word;
+        return CharClass::Punct;
+    }
     static void set_color(cairo_t*cr,const litehtml::web_color&c){
         cairo_set_source_rgba(cr,c.red/255.0,c.green/255.0,c.blue/255.0,c.alpha/255.0);}
     bool span_in(const TextSpan&sp,int sx,int sy,int ex,int ey)const{

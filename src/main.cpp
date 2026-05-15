@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <string>
 #include <fstream>
 #include <sstream>
@@ -79,6 +80,7 @@ struct App {
 
     /* Search */
     bool search_active = false;
+    bool case_sensitive = false;
     std::string search_query;
     std::vector<SearchHit> search_matches;
     int current_match = -1;
@@ -246,6 +248,7 @@ static void draw_search_bar(App *a, cairo_t *cr, int ww) {
     PangoFontDescription *fd = pango_font_description_from_string("Sans 13");
     pango_layout_set_font_description(l, fd);
 
+    /* "Find: <query>" with caret */
     std::string text = "Find: " + a->search_query;
     pango_layout_set_text(l, text.c_str(), -1);
     int tw = 0, th = 0;
@@ -254,25 +257,56 @@ static void draw_search_bar(App *a, cairo_t *cr, int ww) {
     double ty = (bh - th) / 2.0;
     cairo_move_to(cr, 12, ty);
     pango_cairo_show_layout(cr, l);
-
-    /* Caret */
     cairo_rectangle(cr, 12 + tw + 1, ty, 2, th);
     cairo_fill(cr);
 
-    /* Match count or status */
+    /* Match count / hint */
     std::string count;
-    if (a->search_query.empty())            count = "Ctrl+F · Enter: next · Shift+Enter: prev · Esc: close";
-    else if (a->search_matches.empty())     count = "No matches";
-    else                                    count = std::to_string(a->current_match + 1) + " / " +
-                                                    std::to_string(a->search_matches.size());
-
+    if (a->search_query.empty())        count = "Enter · Shift+Enter · Esc · Alt+C · Ctrl+⌫";
+    else if (a->search_matches.empty()) count = "No matches";
+    else                                count = std::to_string(a->current_match + 1) + " / " +
+                                                std::to_string(a->search_matches.size());
     pango_layout_set_text(l, count.c_str(), -1);
-    int cw = 0, ch = 0;
-    pango_layout_get_pixel_size(l, &cw, &ch);
+    int cnt_w = 0, cnt_h = 0;
+    pango_layout_get_pixel_size(l, &cnt_w, &cnt_h);
+
+    /* Case-sensitivity indicator. Dimmed gray when off, boxed + accented when on. */
+    PangoLayout *li = pango_cairo_create_layout(cr);
+    PangoFontDescription *fdi = pango_font_description_from_string("Sans Bold 11");
+    pango_layout_set_font_description(li, fdi);
+    pango_layout_set_text(li, "Aa", -1);
+    int iw = 0, ih = 0;
+    pango_layout_get_pixel_size(li, &iw, &ih);
+    int box_pad_x = 5, box_pad_y = 3;
+    int box_w = iw + box_pad_x * 2;
+    int box_h = ih + box_pad_y * 2;
+
+    int x_right = ww - 12;
+    int x_count = x_right - cnt_w;
+    int x_box   = x_count - 10 - box_w;
+    double y_box = (bh - box_h) / 2.0;
+
+    if (a->case_sensitive) {
+        cairo_set_source_rgba(cr, 0.20, 0.50, 0.90, 0.18);
+        cairo_rectangle(cr, x_box, y_box, box_w, box_h);
+        cairo_fill(cr);
+        cairo_set_source_rgba(cr, 0.20, 0.50, 0.90, 0.70);
+        cairo_set_line_width(cr, 1.0);
+        cairo_rectangle(cr, x_box + 0.5, y_box + 0.5, box_w - 1, box_h - 1);
+        cairo_stroke(cr);
+        cairo_set_source_rgb(cr, 0.05, 0.30, 0.65);
+    } else {
+        cairo_set_source_rgba(cr, 0.55, 0.55, 0.55, 1.0);
+    }
+    cairo_move_to(cr, x_box + box_pad_x, (bh - ih) / 2.0);
+    pango_cairo_show_layout(cr, li);
+
     cairo_set_source_rgb(cr, 0.40, 0.40, 0.40);
-    cairo_move_to(cr, ww - cw - 12, (bh - ch) / 2.0);
+    cairo_move_to(cr, x_count, (bh - cnt_h) / 2.0);
     pango_cairo_show_layout(cr, l);
 
+    pango_font_description_free(fdi);
+    g_object_unref(li);
     pango_font_description_free(fd);
     g_object_unref(l);
 }
@@ -302,7 +336,7 @@ static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
     /* Re-find matches against freshly-recorded spans if layout changed since last search */
     if (a->search_active && !a->search_query.empty() && a->match_count_dirty) {
         int prev_cm = a->current_match;
-        a->search_matches = a->con.find_matches(a->search_query);
+        a->search_matches = a->con.find_matches(a->search_query, a->case_sensitive);
         if (a->search_matches.empty()) {
             a->current_match = -1;
         } else if (prev_cm < 0 || prev_cm >= (int)a->search_matches.size()) {
@@ -567,6 +601,16 @@ static void utf8_pop_back(std::string &s) {
     s.erase(i);
 }
 
+/* Ctrl+Backspace style word delete: skip trailing whitespace, then delete
+   back to the next whitespace boundary (or start of string). */
+static void delete_word_back(std::string &s) {
+    if (s.empty()) return;
+    size_t i = s.size();
+    while (i > 0 && isspace((unsigned char)s[i - 1])) i--;
+    while (i > 0 && !isspace((unsigned char)s[i - 1])) i--;
+    s.erase(i);
+}
+
 static void navigate_match(App *a, mdv_window *w, bool backward) {
     if (a->search_matches.empty()) return;
     int n = (int)a->search_matches.size();
@@ -589,7 +633,8 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
         }
         if (ks == XKB_KEY_BackSpace) {
             if (!a->search_query.empty()) {
-                utf8_pop_back(a->search_query);
+                if (mods & MDV_MOD_CTRL) delete_word_back(a->search_query);
+                else                     utf8_pop_back(a->search_query);
                 a->match_count_dirty = true;
                 if (a->search_query.empty()) {
                     a->search_matches.clear();
@@ -597,6 +642,15 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
                 }
                 mdv_window_request_redraw(w);
             }
+            return;
+        }
+        if (mods & MDV_MOD_ALT) {
+            if (ks == XKB_KEY_c) {
+                a->case_sensitive = !a->case_sensitive;
+                a->match_count_dirty = true;
+                mdv_window_request_redraw(w);
+            }
+            /* Eat all other Alt combos so they don't get typed as text. */
             return;
         }
         if (mods & MDV_MOD_CTRL) {

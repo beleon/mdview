@@ -72,6 +72,8 @@ chmod +x build.sh
 | `Ctrl+F` | Open find bar (Esc to close) |
 | `Enter` / `F3` | Next match (while find bar is open) |
 | `Shift+Enter` / `Shift+F3` | Previous match |
+| `Alt+C` | Toggle case-sensitive search |
+| `Ctrl+Backspace` | Delete word in find bar |
 | `Ctrl++` / `Ctrl+=` | Zoom in |
 | `Ctrl+-` | Zoom out |
 | `Ctrl+0` | Reset zoom |
@@ -84,6 +86,8 @@ chmod +x build.sh
 - **Ctrl+wheel** — zoom in / out
 - **Trackpad pinch** — zoom in / out (compositors that support `pointer-gestures-unstable-v1`)
 - **Click + drag** — select text
+- **Double-click** — select word (drag to extend by words)
+- **Triple-click** — select line (drag to extend by lines)
 - **Title bar drag** — move window (CSD mode)
 
 ## Window Decorations
