@@ -173,7 +173,7 @@ static constexpr int    SB_W = 8;
 static constexpr double SB_MIN = 20.0;
 static constexpr int    AUTOSCROLL_SPD = 8;
 static constexpr double KEY_SPD = 4.0, PAGE_SPD = 30.0;
-static constexpr double ZOOM_MIN = 0.25, ZOOM_MAX = 5.0, ZOOM_STEP = 0.1;
+static constexpr double ZOOM_MIN = 1.0, ZOOM_MAX = 5.0, ZOOM_STEP = 0.1;
 static constexpr int    SEARCH_BAR_H = 36;
 static constexpr int    STATUS_H = 22;
 static constexpr int    SIDEBAR_W = 280;
@@ -295,21 +295,20 @@ static std::vector<App::TocEntry> extract_toc(const std::string &html) {
     return r;
 }
 
-/* Soft clamp — Google-Maps style with a safety net. Scroll is allowed to
-   push content into whitespace on either side, but at least MIN_VISIBLE
-   pixels of content must remain on screen so it never disappears entirely.
-   Zoom focus-point is preserved exactly (the bounds are wide enough that
-   typical focus-point math falls inside them). */
+/* Firefox-pinch-zoom-style clamping.
+   X axis: strict — no whitespace at left or right. When content fits the
+           viewport, scroll_x is forced to 0 (left-aligned).
+   Y axis: soft — allow some overscroll so vertical zoom focus-point stays
+           preserved, but keep at least MIN_VISIBLE px of content visible. */
 static void clamp(App *a) {
     constexpr double MIN_VISIBLE = 50.0;
     double cw = a->doc_w * a->zoom, ch = a->doc_h * a->zoom;
 
-    /* x axis: content_left = -scroll_x must be ≤ vp_w - MIN_VISIBLE, and
-       content_right = -scroll_x + cw must be ≥ MIN_VISIBLE. */
-    double lo_x = MIN_VISIBLE - a->vp_w;
-    double hi_x = cw - MIN_VISIBLE;
-    if (hi_x < lo_x) hi_x = lo_x;  /* viewport narrower than 2*MIN_VISIBLE */
-    a->scroll_x = std::clamp(a->scroll_x, lo_x, hi_x);
+    if (cw <= a->vp_w) {
+        a->scroll_x = 0;
+    } else {
+        a->scroll_x = std::clamp(a->scroll_x, 0.0, cw - a->vp_w);
+    }
 
     double lo_y = MIN_VISIBLE - a->vp_h;
     double hi_y = ch - MIN_VISIBLE;
@@ -1595,7 +1594,7 @@ int main(int argc, char **argv) {
     app.file_path = file;
     { auto sl = app.file_path.find_last_of('/');
       app.file_basename = (sl == std::string::npos) ? app.file_path : app.file_path.substr(sl + 1); }
-    app.zoom            = persisted.zoom;
+    app.zoom            = std::clamp(persisted.zoom, ZOOM_MIN, ZOOM_MAX);
     app.dark_mode       = persisted.dark_mode;
     app.case_sensitive  = persisted.case_sensitive;
     app.whole_word      = persisted.whole_word;
