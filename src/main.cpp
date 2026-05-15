@@ -1586,16 +1586,22 @@ int main(int argc, char **argv) {
     /* Fork off so the launching shell gets its prompt back immediately. We
        do this AFTER reading the file so that "no such file" still surfaces
        to the user's terminal. setsid() puts the child in its own session,
-       so closing the terminal won't SIGHUP the viewer. stdin/stdout are
-       redirected to /dev/null; stderr stays attached so any runtime errors
-       still print to the launching terminal until the user closes it. */
+       so closing the terminal won't SIGHUP the viewer. All three standard
+       fds are redirected to /dev/null — if any of them stays attached to
+       the launching tty, some terminal emulators won't close cleanly on
+       Ctrl+D. Use --foreground to keep stderr visible while debugging. */
     if (!foreground) {
         pid_t pid = fork();
         if (pid < 0) { perror("fork"); return 1; }
         if (pid > 0) return 0;
         setsid();
         int dn = open("/dev/null", O_RDWR);
-        if (dn >= 0) { dup2(dn, STDIN_FILENO); dup2(dn, STDOUT_FILENO); if (dn > 2) close(dn); }
+        if (dn >= 0) {
+            dup2(dn, STDIN_FILENO);
+            dup2(dn, STDOUT_FILENO);
+            dup2(dn, STDERR_FILENO);
+            if (dn > 2) close(dn);
+        }
     }
 
     mdv::State persisted = mdv::load_state();
