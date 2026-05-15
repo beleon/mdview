@@ -35,6 +35,8 @@ Takes a single CLI argument — a path to a `.md` file — converts it to HTML v
 - Persistent zoom + window size between sessions (`~/.config/mdview/state`)
 - Help overlay with **F1** or **?**
 - Status bar showing filename, scroll %, zoom %, and highlight progress
+- Outline / TOC sidebar (Ctrl+T) listing h1-h3 headings; click to jump
+- Dark mode (Ctrl+D), persisted
 
 ## Building
 
@@ -83,6 +85,8 @@ chmod +x build.sh
 | `Ctrl++` / `Ctrl+=` | Zoom in |
 | `Ctrl+-` | Zoom out |
 | `Ctrl+0` | Reset zoom |
+| `Ctrl+T` | Toggle outline (TOC) sidebar |
+| `Ctrl+D` | Toggle dark mode |
 | `F1` / `?` | Toggle help overlay |
 | `q` / `Escape` | Quit (Esc also closes help / find) |
 

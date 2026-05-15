@@ -278,16 +278,25 @@ public:
     void draw_search_matches(cairo_t *cr,const std::vector<SearchHit>&hits,int current)const{
         for(size_t i=0;i<hits.size();i++){
             const SearchHit&h=hits[i];
-            if((int)i==current)cairo_set_source_rgba(cr,1.0,0.55,0.0,0.55);
-            else                cairo_set_source_rgba(cr,1.0,0.92,0.0,0.50);
+            if(dark_mode_){
+                if((int)i==current)cairo_set_source_rgba(cr,1.00,0.50,0.10,0.65);
+                else                cairo_set_source_rgba(cr,0.95,0.75,0.10,0.45);
+            } else {
+                if((int)i==current)cairo_set_source_rgba(cr,1.0,0.55,0.0,0.55);
+                else                cairo_set_source_rgba(cr,1.0,0.92,0.0,0.50);
+            }
             cairo_rectangle(cr,h.doc_x-sx_,h.doc_y-sy_,h.width,h.height);
             cairo_fill(cr);
         }
     }
 
+    void set_dark_mode(bool dark){dark_mode_=dark;}
+
     void draw_selection_overlay(cairo_t *cr)const{
         auto sel=get_selected_sorted();if(sel.empty())return;auto lines=group_lines(sel);
-        int sx,sy,ex,ey;sel_.get_ordered(sx,sy,ex,ey);cairo_set_source_rgba(cr,0.2,0.5,0.9,0.3);
+        int sx,sy,ex,ey;sel_.get_ordered(sx,sy,ex,ey);
+        if(dark_mode_)cairo_set_source_rgba(cr,0.35,0.55,1.0,0.35);
+        else          cairo_set_source_rgba(cr,0.20,0.50,0.90,0.30);
         for(int li=0;li<(int)lines.size();li++){auto&lg=lines[li];int lcy=sel[lg.start]->y+sel[lg.start]->height/2;
             bool is_f=(std::abs(lcy-sy)<=4),is_l=(std::abs(lcy-ey)<=4);
             int hl_l=sel[lg.start]->x,hl_r=sel[lg.end-1]->x+sel[lg.end-1]->width;
@@ -455,4 +464,5 @@ private:
     std::vector<TextSpan>spans_;Selection sel_;
     std::map<std::string,CachedImage*>imgs_;
     std::function<void(const std::string&)> anchor_click_cb_;
+    bool dark_mode_=false;
 };
