@@ -207,6 +207,8 @@ struct App {
     /* Search */
     bool search_active = false;
     bool case_sensitive = false;
+    bool whole_word = false;
+    bool regex_mode = false;
     std::string search_query;
     std::vector<SearchHit> search_matches;
     int current_match = -1;
@@ -620,6 +622,8 @@ static void draw_help_overlay(App *a, cairo_t *cr, int ww, int hh) {
         "      Enter / F3          Next match",
         "      Shift+Enter / S+F3  Previous match",
         "      Alt+C               Toggle case-sensitive",
+        "      Alt+W               Toggle whole-word",
+        "      Alt+R               Toggle regex",
         "      Ctrl+Backspace      Delete word",
         "      Esc                 Close find",
         "    F1 / ?                Toggle this help",
@@ -755,53 +759,64 @@ static void draw_search_bar(App *a, cairo_t *cr, int ww) {
     cairo_rectangle(cr, 12 + tw_l + 1, ty, 2, th_l);
     cairo_fill(cr);
 
-    /* Match count / hint */
+    /* Match count / hint (or red error tag for an invalid regex) */
+    bool regex_bad = a->regex_mode && !a->search_query.empty()
+                  && !CairoContainer::regex_is_valid(a->search_query, a->case_sensitive);
     std::string count;
-    if (a->search_query.empty())        count = "Enter · Shift+Enter · Esc · Alt+C · Ctrl+⌫";
-    else if (a->search_matches.empty()) count = "No matches";
-    else                                count = std::to_string(a->current_match + 1) + " / " +
-                                                std::to_string(a->search_matches.size());
+    if (regex_bad)                           count = "Invalid regex";
+    else if (a->search_query.empty())        count = "Enter · Esc · Alt+C/W/R · Ctrl+⌫";
+    else if (a->search_matches.empty())      count = "No matches";
+    else                                     count = std::to_string(a->current_match + 1) + " / " +
+                                                     std::to_string(a->search_matches.size());
     pango_layout_set_text(l, count.c_str(), -1);
     int cnt_w = 0, cnt_h = 0;
     pango_layout_get_pixel_size(l, &cnt_w, &cnt_h);
 
-    /* Case-sensitivity indicator. Dimmed gray when off, boxed + accented when on. */
-    PangoLayout *li = pango_cairo_create_layout(cr);
-    PangoFontDescription *fdi = pango_font_description_from_string("Sans Bold 11");
-    pango_layout_set_font_description(li, fdi);
-    pango_layout_set_text(li, "Aa", -1);
-    int iw = 0, ih = 0;
-    pango_layout_get_pixel_size(li, &iw, &ih);
-    int box_pad_x = 5, box_pad_y = 3;
-    int box_w = iw + box_pad_x * 2;
-    int box_h = ih + box_pad_y * 2;
+    /* Three search-mode toggles, drawn right-to-left from just before the
+       count: ".*" (regex), "Word" (whole word), "Aa" (case-sensitive). */
+    auto draw_toggle = [&](const char *label, bool on, int x_right_edge,
+                           int *out_box_w) {
+        PangoLayout *li = pango_cairo_create_layout(cr);
+        PangoFontDescription *fdi = pango_font_description_from_string("Sans Bold 11");
+        pango_layout_set_font_description(li, fdi);
+        pango_layout_set_text(li, label, -1);
+        int iw = 0, ih = 0;
+        pango_layout_get_pixel_size(li, &iw, &ih);
+        int box_pad_x = 5, box_pad_y = 3;
+        int box_w_ = iw + box_pad_x * 2;
+        int box_h_ = ih + box_pad_y * 2;
+        int x_box  = x_right_edge - box_w_;
+        double y_box = (bh - box_h_) / 2.0;
+        if (on) {
+            cairo_set_source_rgba(cr, c.accent_bg[0], c.accent_bg[1], c.accent_bg[2], c.accent_bg[3]);
+            cairo_rectangle(cr, x_box, y_box, box_w_, box_h_); cairo_fill(cr);
+            cairo_set_source_rgba(cr, c.accent[0], c.accent[1], c.accent[2], 0.7);
+            cairo_set_line_width(cr, 1.0);
+            cairo_rectangle(cr, x_box + 0.5, y_box + 0.5, box_w_ - 1, box_h_ - 1); cairo_stroke(cr);
+            cairo_set_source_rgb(cr, c.accent[0], c.accent[1], c.accent[2]);
+        } else {
+            cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
+        }
+        cairo_move_to(cr, x_box + box_pad_x, (bh - ih) / 2.0);
+        pango_cairo_show_layout(cr, li);
+        pango_font_description_free(fdi);
+        g_object_unref(li);
+        *out_box_w = box_w_;
+    };
 
     int x_right = ww - 12;
     int x_count = x_right - cnt_w;
-    int x_box   = x_count - 10 - box_w;
-    double y_box = (bh - box_h) / 2.0;
+    int x_cursor = x_count - 10;
+    int tw_box;
+    draw_toggle(".*",   a->regex_mode,     x_cursor, &tw_box); x_cursor -= tw_box + 6;
+    draw_toggle("Word", a->whole_word,     x_cursor, &tw_box); x_cursor -= tw_box + 6;
+    draw_toggle("Aa",   a->case_sensitive, x_cursor, &tw_box);
 
-    if (a->case_sensitive) {
-        cairo_set_source_rgba(cr, c.accent_bg[0], c.accent_bg[1], c.accent_bg[2], c.accent_bg[3]);
-        cairo_rectangle(cr, x_box, y_box, box_w, box_h);
-        cairo_fill(cr);
-        cairo_set_source_rgba(cr, c.accent[0], c.accent[1], c.accent[2], 0.7);
-        cairo_set_line_width(cr, 1.0);
-        cairo_rectangle(cr, x_box + 0.5, y_box + 0.5, box_w - 1, box_h - 1);
-        cairo_stroke(cr);
-        cairo_set_source_rgb(cr, c.accent[0], c.accent[1], c.accent[2]);
-    } else {
-        cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
-    }
-    cairo_move_to(cr, x_box + box_pad_x, (bh - ih) / 2.0);
-    pango_cairo_show_layout(cr, li);
-
-    cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
+    if (regex_bad) cairo_set_source_rgb(cr, 0.80, 0.20, 0.20);
+    else           cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
     cairo_move_to(cr, x_count, (bh - cnt_h) / 2.0);
     pango_cairo_show_layout(cr, l);
 
-    pango_font_description_free(fdi);
-    g_object_unref(li);
     pango_font_description_free(fd);
     g_object_unref(l);
 }
@@ -962,7 +977,7 @@ static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
     /* Re-find matches against freshly-recorded spans if layout changed since last search */
     if (a->search_active && !a->search_query.empty() && a->match_count_dirty) {
         int prev_cm = a->current_match;
-        a->search_matches = a->con.find_matches(a->search_query, a->case_sensitive);
+        a->search_matches = a->con.find_matches(a->search_query, a->case_sensitive, a->whole_word, a->regex_mode);
         if (a->search_matches.empty()) {
             a->current_match = -1;
         } else if (prev_cm < 0 || prev_cm >= (int)a->search_matches.size()) {
@@ -1373,11 +1388,9 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
             return;
         }
         if (mods & MDV_MOD_ALT) {
-            if (ks == XKB_KEY_c) {
-                a->case_sensitive = !a->case_sensitive;
-                a->match_count_dirty = true;
-                mdv_window_request_redraw(w);
-            }
+            if      (ks == XKB_KEY_c) { a->case_sensitive = !a->case_sensitive; a->match_count_dirty = true; mdv_window_request_redraw(w); }
+            else if (ks == XKB_KEY_w) { a->whole_word     = !a->whole_word;     a->match_count_dirty = true; mdv_window_request_redraw(w); }
+            else if (ks == XKB_KEY_r) { a->regex_mode     = !a->regex_mode;     a->match_count_dirty = true; mdv_window_request_redraw(w); }
             /* Eat all other Alt combos so they don't get typed as text. */
             return;
         }
@@ -1608,6 +1621,8 @@ int main(int argc, char **argv) {
     app.zoom            = persisted.zoom;
     app.dark_mode       = persisted.dark_mode;
     app.case_sensitive  = persisted.case_sensitive;
+    app.whole_word      = persisted.whole_word;
+    app.regex_mode      = persisted.regex_mode;
     app.source_md       = ss.str();
     app.html            = add_heading_ids(md2html(app.source_md, app.dark_mode));
     app.original_html   = app.html;
@@ -1659,6 +1674,8 @@ int main(int argc, char **argv) {
     out.window_height  = mdv_window_surface_height(w);
     out.dark_mode      = app.dark_mode;
     out.case_sensitive = app.case_sensitive;
+    out.whole_word     = app.whole_word;
+    out.regex_mode     = app.regex_mode;
     mdv::save_state(out);
 
     app.live_reloader.stop();

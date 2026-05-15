@@ -81,6 +81,8 @@ chmod +x build.sh
 | `Enter` / `F3` | Next match (while find bar is open) |
 | `Shift+Enter` / `Shift+F3` | Previous match |
 | `Alt+C` | Toggle case-sensitive search |
+| `Alt+W` | Toggle whole-word search |
+| `Alt+R` | Toggle regex search |
 | `Ctrl+Backspace` | Delete word in find bar |
 | `Ctrl++` / `Ctrl+=` | Zoom in |
 | `Ctrl+-` | Zoom out |

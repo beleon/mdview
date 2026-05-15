@@ -20,6 +20,8 @@ struct State {
     int    window_height   = 700;
     bool   dark_mode       = false;
     bool   case_sensitive  = false;
+    bool   whole_word      = false;
+    bool   regex_mode      = false;
 };
 
 /* Returns "$XDG_CONFIG_HOME/mdview/state", falling back to
@@ -66,8 +68,10 @@ static inline State load_state() {
         if      (key == "zoom")           s.zoom = atof(val.c_str());
         else if (key == "window_width")   s.window_width = atoi(val.c_str());
         else if (key == "window_height")  s.window_height = atoi(val.c_str());
-        else if (key == "dark_mode")      s.dark_mode = (val == "1" || val == "true");
+        else if (key == "dark_mode")      s.dark_mode      = (val == "1" || val == "true");
         else if (key == "case_sensitive") s.case_sensitive = (val == "1" || val == "true");
+        else if (key == "whole_word")     s.whole_word     = (val == "1" || val == "true");
+        else if (key == "regex_mode")     s.regex_mode     = (val == "1" || val == "true");
     }
     return s;
 }
@@ -87,6 +91,8 @@ static inline void save_state(const State &s) {
         f << "window_height="  << s.window_height  << "\n";
         f << "dark_mode="      << (s.dark_mode ? 1 : 0)      << "\n";
         f << "case_sensitive=" << (s.case_sensitive ? 1 : 0) << "\n";
+        f << "whole_word="     << (s.whole_word ? 1 : 0)     << "\n";
+        f << "regex_mode="     << (s.regex_mode ? 1 : 0)     << "\n";
     }
     rename(tmp.c_str(), p.c_str());
 }

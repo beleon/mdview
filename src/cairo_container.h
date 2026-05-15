@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cctype>
 #include <functional>
+#include <regex>
 
 struct CairoFont {
     PangoFontDescription *desc;
@@ -246,33 +247,84 @@ public:
         return r;
     }
 
-    /* Substring search over recorded TextSpans. When case_sensitive is false,
-       both query and span text are lowercased (ASCII only) before comparison.
-       Returns hits in document coordinates, sorted top-to-bottom,
-       left-to-right. Per-span search — multi-word matches that cross
-       formatting boundaries (e.g. "**foo** bar" as two spans) won't match. */
-    std::vector<SearchHit> find_matches(const std::string &query, bool case_sensitive)const{
+    /* Substring search over recorded TextSpans.
+       - case_sensitive: when false, query and span text are lowercased (ASCII).
+       - whole_word: match must have a non-Word char (or string edge) on both sides.
+       - regex_mode: query is an ECMAScript regex (case-insensitivity via regex::icase).
+         Invalid patterns return an empty result (UI surfaces this via a red tint).
+       Per-span search — multi-line or cross-formatting matches still won't work. */
+    std::vector<SearchHit> find_matches(const std::string &query,
+                                        bool case_sensitive,
+                                        bool whole_word,
+                                        bool regex_mode) const {
         std::vector<SearchHit> r;
-        if(query.empty()||spans_.empty())return r;
-        std::string q=query;
-        if(!case_sensitive) for(auto&c:q)c=(char)tolower((unsigned char)c);
-        for(const TextSpan&sp:spans_){
-            std::string t=sp.text;
-            if(!case_sensitive) for(auto&c:t)c=(char)tolower((unsigned char)c);
-            size_t pos=0;
-            while((pos=t.find(q,pos))!=std::string::npos){
-                int x1=index_to_x(sp,(int)pos);
-                int x2=index_to_x(sp,(int)(pos+q.size()));
-                r.push_back({x1,sp.y,x2-x1,sp.height});
-                pos+=q.size();
+        if (query.empty() || spans_.empty()) return r;
+
+        auto check_word_boundary = [&](const std::string &t, size_t start, size_t len) {
+            if (!whole_word) return true;
+            bool ok_before = (start == 0)
+                          || classify((unsigned char)t[start - 1]) != CharClass::Word;
+            bool ok_after  = (start + len >= t.size())
+                          || classify((unsigned char)t[start + len]) != CharClass::Word;
+            return ok_before && ok_after;
+        };
+        auto record_hit = [&](const TextSpan &sp, size_t start, size_t len) {
+            int x1 = index_to_x(sp, (int)start);
+            int x2 = index_to_x(sp, (int)(start + len));
+            r.push_back({x1, sp.y, x2 - x1, sp.height});
+        };
+
+        if (regex_mode) {
+            std::regex::flag_type flags = std::regex::ECMAScript;
+            if (!case_sensitive) flags |= std::regex::icase;
+            std::regex re;
+            try { re = std::regex(query, flags); }
+            catch (const std::regex_error &) { return r; }
+            for (const TextSpan &sp : spans_) {
+                try {
+                    auto begin = std::sregex_iterator(sp.text.begin(), sp.text.end(), re);
+                    auto end   = std::sregex_iterator();
+                    for (auto it = begin; it != end; ++it) {
+                        auto m = *it;
+                        size_t start = (size_t)m.position(0);
+                        size_t len   = (size_t)m.length(0);
+                        if (len == 0) continue;            /* skip zero-width matches */
+                        if (!check_word_boundary(sp.text, start, len)) continue;
+                        record_hit(sp, start, len);
+                    }
+                } catch (const std::regex_error &) { /* ignore per-span errors */ }
+            }
+        } else {
+            std::string q = query;
+            if (!case_sensitive) for (auto &c : q) c = (char)tolower((unsigned char)c);
+            for (const TextSpan &sp : spans_) {
+                std::string t = sp.text;
+                if (!case_sensitive) for (auto &c : t) c = (char)tolower((unsigned char)c);
+                size_t pos = 0;
+                while ((pos = t.find(q, pos)) != std::string::npos) {
+                    if (check_word_boundary(t, pos, q.size()))
+                        record_hit(sp, pos, q.size());
+                    pos += q.size();
+                }
             }
         }
-        std::sort(r.begin(),r.end(),[](const SearchHit&a,const SearchHit&b){
-            int ay=a.doc_y+a.height/2,by=b.doc_y+b.height/2;
-            if(std::abs(ay-by)>4)return ay<by;
-            return a.doc_x<b.doc_x;
+
+        std::sort(r.begin(), r.end(), [](const SearchHit &a, const SearchHit &b) {
+            int ay = a.doc_y + a.height / 2, by = b.doc_y + b.height / 2;
+            if (std::abs(ay - by) > 4) return ay < by;
+            return a.doc_x < b.doc_x;
         });
         return r;
+    }
+
+    /* Quick syntax check for a regex pattern in the same flavor as
+       find_matches. Used by the UI to flag invalid patterns visually. */
+    static bool regex_is_valid(const std::string &q, bool case_sensitive) {
+        if (q.empty()) return true;
+        std::regex::flag_type flags = std::regex::ECMAScript;
+        if (!case_sensitive) flags |= std::regex::icase;
+        try { std::regex re(q, flags); (void)re; return true; }
+        catch (const std::regex_error &) { return false; }
     }
 
     void draw_search_matches(cairo_t *cr,const std::vector<SearchHit>&hits,int current)const{
