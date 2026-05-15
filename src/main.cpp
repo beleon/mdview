@@ -295,14 +295,13 @@ static std::vector<App::TocEntry> extract_toc(const std::string &html) {
     return r;
 }
 
-/* Clamp for user scrolling — no whitespace when content overflows */
-static void clamp(App *a) {
-    double cw = a->doc_w * a->zoom, ch = a->doc_h * a->zoom;
-    if (cw <= a->vp_w) a->scroll_x = std::clamp(a->scroll_x, -(a->vp_w - cw), 0.0);
-    else               a->scroll_x = std::clamp(a->scroll_x, 0.0, cw - a->vp_w);
-    if (ch <= a->vp_h) a->scroll_y = std::clamp(a->scroll_y, -(a->vp_h - ch), 0.0);
-    else               a->scroll_y = std::clamp(a->scroll_y, 0.0, ch - a->vp_h);
-}
+/* Scroll is now intentionally unbounded — Google-Maps style. The user can
+   wheel-scroll into whitespace beyond either edge of the document; in return,
+   zoom focus-point is preserved exactly. Inline std::clamp calls in the
+   scrollbar drag handlers still keep scrollbar-driven scrolling within
+   [0, max], because scrollbars are only visible when content overflows and
+   represent a fraction of that finite range. */
+static void clamp(App *a) { (void)a; }
 
 static bool tick_on(App *a) { return a->key_scrolling || a->autoscroll_dir != 0; }
 
