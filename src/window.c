@@ -85,6 +85,9 @@ struct mdv_window {
     bool first_frame_done;
     mdv_after_init_cb after_init_cb;
     void *after_init_ud;
+    /* HiDPI: compositor-suggested integer buffer scale (1 = stay logical). */
+    int buffer_scale;
+    int compositor_version;
     mdv_callbacks cb;
 };
 
@@ -124,21 +127,26 @@ static void buf_rel(void *d, struct wl_buffer *wb) {
 }
 static const struct wl_buffer_listener bl = { .release = buf_rel };
 
+/* `ww` and `hh` are logical (surface) dimensions. The actual pixel buffer is
+   sized up by w->buffer_scale so that drawing through cairo scaled by
+   buffer_scale produces crisp output at HiDPI. */
 static mdv_buffer *bnew(mdv_window *w, int ww, int hh) {
     mdv_buffer *b = calloc(1, sizeof(*b));
     if (!b) return NULL;
+    int s = w->buffer_scale > 0 ? w->buffer_scale : 1;
+    int pw = ww * s, ph = hh * s;
     b->win = w;
-    b->stride = ww * 4; b->width = ww; b->height = hh;
-    b->size = (size_t)(b->stride * hh);
+    b->stride = pw * 4; b->width = pw; b->height = ph;
+    b->size = (size_t)(b->stride * ph);
     int fd = mk_shm(b->size);
     if (fd < 0) { free(b); return NULL; }
     b->data = mmap(NULL, b->size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
     if (b->data == MAP_FAILED) { close(fd); free(b); return NULL; }
     struct wl_shm_pool *p = wl_shm_create_pool(w->shm, fd, (int32_t)b->size);
-    b->wl_buf = wl_shm_pool_create_buffer(p, 0, ww, hh, b->stride, WL_SHM_FORMAT_ARGB8888);
+    b->wl_buf = wl_shm_pool_create_buffer(p, 0, pw, ph, b->stride, WL_SHM_FORMAT_ARGB8888);
     wl_shm_pool_destroy(p); close(fd);
     wl_buffer_add_listener(b->wl_buf, &bl, b);
-    b->cairo_surface = cairo_image_surface_create_for_data((unsigned char*)b->data, CAIRO_FORMAT_ARGB32, ww, hh, b->stride);
+    b->cairo_surface = cairo_image_surface_create_for_data((unsigned char*)b->data, CAIRO_FORMAT_ARGB32, pw, ph, b->stride);
     return b;
 }
 
@@ -426,10 +434,41 @@ static void sc(void *d,struct wl_seat *s,uint32_t c){
 static void sn(void *d,struct wl_seat *s,const char *n){(void)d;(void)s;(void)n;}
 static const struct wl_seat_listener stl={.capabilities=sc,.name=sn};
 
+/* wl_surface events. preferred_buffer_scale is the compositor telling us
+   what integer scale to render at; we resize the buffer pool and re-render.
+   The enter/leave events (for tracking which output we're on) are unused
+   because preferred_buffer_scale gives a unified answer. */
+static void surface_enter(void *d, struct wl_surface *s, struct wl_output *o) { (void)d;(void)s;(void)o; }
+static void surface_leave(void *d, struct wl_surface *s, struct wl_output *o) { (void)d;(void)s;(void)o; }
+static void surface_preferred_buffer_scale(void *d, struct wl_surface *s, int32_t factor) {
+    (void)s;
+    mdv_window *w = d;
+    if (factor < 1) factor = 1;
+    if (factor == w->buffer_scale) return;
+    w->buffer_scale = factor;
+    if (w->surf_width > 0 && w->surf_height > 0) {
+        rebufs(w, w->surf_width, w->surf_height);
+        w->needs_redraw = true;
+    }
+}
+static void surface_preferred_buffer_transform(void *d, struct wl_surface *s, uint32_t t) { (void)d;(void)s;(void)t; }
+static const struct wl_surface_listener surface_listener = {
+    .enter = surface_enter,
+    .leave = surface_leave,
+    .preferred_buffer_scale = surface_preferred_buffer_scale,
+    .preferred_buffer_transform = surface_preferred_buffer_transform,
+};
+
 /* Registry */
 static void rg(void *d,struct wl_registry *r,uint32_t name,const char *iface,uint32_t ver){
     (void)ver;mdv_window *w=d;
-    if(!strcmp(iface,wl_compositor_interface.name))w->compositor=wl_registry_bind(r,name,&wl_compositor_interface,4);
+    if(!strcmp(iface,wl_compositor_interface.name)){
+        /* Need v6 for wl_surface.preferred_buffer_scale (HiDPI). Fall back to
+           whatever the compositor offers if it's older. */
+        uint32_t v = ver >= 6 ? 6 : ver;
+        w->compositor=wl_registry_bind(r,name,&wl_compositor_interface,v);
+        w->compositor_version = (int)v;
+    }
     else if(!strcmp(iface,wl_shm_interface.name))w->shm=wl_registry_bind(r,name,&wl_shm_interface,1);
     else if(!strcmp(iface,wl_seat_interface.name)){w->seat=wl_registry_bind(r,name,&wl_seat_interface,5);wl_seat_add_listener(w->seat,&stl,w);}
     else if(!strcmp(iface,xdg_wm_base_interface.name)){w->xdg_wm_base=wl_registry_bind(r,name,&xdg_wm_base_interface,1);xdg_wm_base_add_listener(w->xdg_wm_base,&xwl,w);}
@@ -449,13 +488,19 @@ static void rf(mdv_window *w){
     if(!b)return;
     if(b->busy){w->current_buf^=1;b=w->buffers[w->current_buf];}
     if(!b||!b->cairo_surface||!b->data)return;
+    int s = w->buffer_scale > 0 ? w->buffer_scale : 1;
     cairo_t *cr=cairo_create(b->cairo_surface);
+    /* Scale up cairo's coordinate system so logical-pixel drawing fills the
+       larger physical buffer crisply. The compositor downscales via
+       wl_surface.set_buffer_scale, set just before commit below. */
+    if (s != 1) cairo_scale(cr, s, s);
     if(w->use_csd){draw_csd(w,cr);cairo_save(cr);cairo_translate(cr,0,CSD_TITLEBAR_HEIGHT);cairo_rectangle(cr,0,0,cw(w),ch(w));cairo_clip(cr);}
     if(w->cb.on_redraw)w->cb.on_redraw(w,cr,cw(w),ch(w),w->cb.userdata);
     if(w->use_csd)cairo_restore(cr);
     cairo_destroy(cr);cairo_surface_flush(b->cairo_surface);
     wl_surface_attach(w->surface,b->wl_buf,0,0);
-    wl_surface_damage_buffer(w->surface,0,0,w->surf_width,w->surf_height);
+    wl_surface_set_buffer_scale(w->surface, s);
+    wl_surface_damage_buffer(w->surface,0,0,w->surf_width*s,w->surf_height*s);
     w->frame_cb=wl_surface_frame(w->surface);wl_callback_add_listener(w->frame_cb,&fl,w);
     wl_surface_commit(w->surface);b->busy=true;w->needs_redraw=false;
 }
@@ -474,6 +519,7 @@ mdv_window *mdv_window_create(const char *title,int width,int height,const mdv_c
     w->surf_width=width;w->surf_height=height;w->cb=*cb;w->title=strdup(title?title:"mdview");
     w->timerfd=-1; w->repeat_timerfd=-1;
     w->repeat_rate=DEFAULT_REPEAT_RATE; w->repeat_delay=DEFAULT_REPEAT_DELAY;
+    w->buffer_scale = 1;
     w->xkb_ctx=xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     w->display=wl_display_connect(NULL);
     if(!w->display){fprintf(stderr,"Cannot connect to Wayland\n");free(w->title);free(w);return NULL;}
@@ -481,6 +527,10 @@ mdv_window *mdv_window_create(const char *title,int width,int height,const mdv_c
     wl_registry_add_listener(w->registry,&rl,w);wl_display_roundtrip(w->display);wl_display_roundtrip(w->display);
     if(!w->compositor||!w->shm||!w->xdg_wm_base){fprintf(stderr,"Missing Wayland globals\n");mdv_window_destroy(w);return NULL;}
     w->surface=wl_compositor_create_surface(w->compositor);
+    /* Attach surface listener for preferred_buffer_scale (HiDPI). Only fires
+       when the compositor binds wl_compositor at v6 or higher. */
+    if (w->compositor_version >= 6)
+        wl_surface_add_listener(w->surface, &surface_listener, w);
     w->xdg_surface=xdg_wm_base_get_xdg_surface(w->xdg_wm_base,w->surface);
     xdg_surface_add_listener(w->xdg_surface,&xsl,w);
     w->xdg_toplevel=xdg_surface_get_toplevel(w->xdg_surface);

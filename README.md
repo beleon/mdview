@@ -37,6 +37,9 @@ Takes a single CLI argument — a path to a `.md` file — converts it to HTML v
 - Status bar showing filename, scroll %, zoom %, and highlight progress
 - Outline / TOC sidebar (Ctrl+T) listing h1-h3 headings; click to jump
 - Dark mode (Ctrl+D), persisted
+- Right-click context menu (Open Link / Copy / Find / Reload / Toggle Dark)
+- Whole-word and regex search modes (Alt+W / Alt+R) alongside case-sensitive (Alt+C)
+- HiDPI-aware rendering via `wl_surface.preferred_buffer_scale` (integer scales)
 
 ## Building
 
