@@ -1,0 +1,7 @@
+build/
+*.tar.gz
+*.tar
+*.o
+*.a
+compile_commands.json
+.cache/
