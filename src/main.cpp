@@ -1548,6 +1548,7 @@ static void print_usage(const char *prog) {
         "Options:\n"
         "  --no-highlight   disable syntax highlighting of code blocks\n"
         "  --no-reload      disable live-reload on file change\n"
+        "  -f, --foreground stay attached to the terminal (default: detach)\n"
         "  -h, --help       show this help\n"
         "\n"
         "Env: MDVIEW_NO_HIGHLIGHT also disables highlighting.\n",
@@ -1557,10 +1558,12 @@ static void print_usage(const char *prog) {
 int main(int argc, char **argv) {
     bool no_highlight = false;
     bool no_reload    = false;
+    bool foreground   = false;
     const char *file = nullptr;
     for (int i = 1; i < argc; i++) {
         if      (strcmp(argv[i], "--no-highlight") == 0) no_highlight = true;
         else if (strcmp(argv[i], "--no-reload")    == 0) no_reload = true;
+        else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--foreground") == 0) foreground = true;
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]); return 0;
         }
@@ -1579,6 +1582,21 @@ int main(int argc, char **argv) {
     std::ifstream f(file);
     if (!f.is_open()) { fprintf(stderr, "Error: cannot open '%s'\n", file); return 1; }
     std::ostringstream ss; ss << f.rdbuf(); f.close();
+
+    /* Fork off so the launching shell gets its prompt back immediately. We
+       do this AFTER reading the file so that "no such file" still surfaces
+       to the user's terminal. setsid() puts the child in its own session,
+       so closing the terminal won't SIGHUP the viewer. stdin/stdout are
+       redirected to /dev/null; stderr stays attached so any runtime errors
+       still print to the launching terminal until the user closes it. */
+    if (!foreground) {
+        pid_t pid = fork();
+        if (pid < 0) { perror("fork"); return 1; }
+        if (pid > 0) return 0;
+        setsid();
+        int dn = open("/dev/null", O_RDWR);
+        if (dn >= 0) { dup2(dn, STDIN_FILENO); dup2(dn, STDOUT_FILENO); if (dn > 2) close(dn); }
+    }
 
     mdv::State persisted = mdv::load_state();
 

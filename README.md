@@ -40,6 +40,7 @@ Takes a single CLI argument — a path to a `.md` file — converts it to HTML v
 - Right-click context menu (Open Link / Copy / Find / Reload / Toggle Dark)
 - Whole-word and regex search modes (Alt+W / Alt+R) alongside case-sensitive (Alt+C)
 - HiDPI-aware rendering via `wl_surface.preferred_buffer_scale` (integer scales)
+- Detaches from the launching terminal (VS Code style); `-f` / `--foreground` keeps it attached
 
 ## Building
 
