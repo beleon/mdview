@@ -341,7 +341,17 @@ public:
         on_milestone_  = on_milestone;
         userdata_      = userdata;
 
+        /* Reset run state — start() may be called again after a previous run
+           (e.g. on dark-mode toggle or live reload). Without this, stale
+           n_done_ / first_fired_ / all_done_ from the prior run would either
+           fire milestones immediately or never. */
         jobs_.clear();
+        n_highlightable_ = 0;
+        n_done_          = 0;
+        in_flight_       = 0;
+        first_fired_     = false;
+        all_done_        = false;
+
         jobs_.reserve(blocks.size());
         for (auto &b : blocks) {
             Job j;
