@@ -295,25 +295,17 @@ static std::vector<App::TocEntry> extract_toc(const std::string &html) {
     return r;
 }
 
-/* Firefox-pinch-zoom-style clamping.
-   X axis: strict — no whitespace at left or right. When content fits the
-           viewport, scroll_x is forced to 0 (left-aligned).
-   Y axis: soft — allow some overscroll so vertical zoom focus-point stays
-           preserved, but keep at least MIN_VISIBLE px of content visible. */
+/* Firefox-pinch-zoom-style clamping. Strict on both axes — no whitespace
+   beyond either edge. When content fits an axis, scroll on that axis is
+   pinned to 0 (top-/left-aligned). Zoom focus-point math may want to push
+   into whitespace; clamp pulls it back, accepting the resulting
+   focus-point drift in the edge case. */
 static void clamp(App *a) {
-    constexpr double MIN_VISIBLE = 50.0;
     double cw = a->doc_w * a->zoom, ch = a->doc_h * a->zoom;
-
-    if (cw <= a->vp_w) {
-        a->scroll_x = 0;
-    } else {
-        a->scroll_x = std::clamp(a->scroll_x, 0.0, cw - a->vp_w);
-    }
-
-    double lo_y = MIN_VISIBLE - a->vp_h;
-    double hi_y = ch - MIN_VISIBLE;
-    if (hi_y < lo_y) hi_y = lo_y;
-    a->scroll_y = std::clamp(a->scroll_y, lo_y, hi_y);
+    if (cw <= a->vp_w) a->scroll_x = 0;
+    else               a->scroll_x = std::clamp(a->scroll_x, 0.0, cw - a->vp_w);
+    if (ch <= a->vp_h) a->scroll_y = 0;
+    else               a->scroll_y = std::clamp(a->scroll_y, 0.0, ch - a->vp_h);
 }
 
 static bool tick_on(App *a) { return a->key_scrolling || a->autoscroll_dir != 0; }
