@@ -295,13 +295,27 @@ static std::vector<App::TocEntry> extract_toc(const std::string &html) {
     return r;
 }
 
-/* Scroll is now intentionally unbounded — Google-Maps style. The user can
-   wheel-scroll into whitespace beyond either edge of the document; in return,
-   zoom focus-point is preserved exactly. Inline std::clamp calls in the
-   scrollbar drag handlers still keep scrollbar-driven scrolling within
-   [0, max], because scrollbars are only visible when content overflows and
-   represent a fraction of that finite range. */
-static void clamp(App *a) { (void)a; }
+/* Soft clamp — Google-Maps style with a safety net. Scroll is allowed to
+   push content into whitespace on either side, but at least MIN_VISIBLE
+   pixels of content must remain on screen so it never disappears entirely.
+   Zoom focus-point is preserved exactly (the bounds are wide enough that
+   typical focus-point math falls inside them). */
+static void clamp(App *a) {
+    constexpr double MIN_VISIBLE = 50.0;
+    double cw = a->doc_w * a->zoom, ch = a->doc_h * a->zoom;
+
+    /* x axis: content_left = -scroll_x must be ≤ vp_w - MIN_VISIBLE, and
+       content_right = -scroll_x + cw must be ≥ MIN_VISIBLE. */
+    double lo_x = MIN_VISIBLE - a->vp_w;
+    double hi_x = cw - MIN_VISIBLE;
+    if (hi_x < lo_x) hi_x = lo_x;  /* viewport narrower than 2*MIN_VISIBLE */
+    a->scroll_x = std::clamp(a->scroll_x, lo_x, hi_x);
+
+    double lo_y = MIN_VISIBLE - a->vp_h;
+    double hi_y = ch - MIN_VISIBLE;
+    if (hi_y < lo_y) hi_y = lo_y;
+    a->scroll_y = std::clamp(a->scroll_y, lo_y, hi_y);
+}
 
 static bool tick_on(App *a) { return a->key_scrolling || a->autoscroll_dir != 0; }
 
