@@ -16,7 +16,7 @@ typedef struct {
     void (*on_redraw)(mdv_window *win, cairo_t *cr, int width, int height, void *userdata);
     void (*on_resize)(mdv_window *win, int width, int height, void *userdata);
     void (*on_mouse_move)(mdv_window *win, int x, int y, void *userdata);
-    void (*on_mouse_button)(mdv_window *win, int x, int y, int button, uint32_t modifiers, bool pressed, void *userdata);
+    void (*on_mouse_button)(mdv_window *win, int x, int y, int button, uint32_t modifiers, bool pressed, int click_count, void *userdata);
     void (*on_scroll)(mdv_window *win, int x, int y, double dx, double dy, uint32_t modifiers, void *userdata);
     void (*on_key)(mdv_window *win, uint32_t keysym, uint32_t modifiers, bool pressed, void *userdata);
     void (*on_close)(mdv_window *win, void *userdata);

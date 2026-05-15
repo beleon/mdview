@@ -14,6 +14,7 @@
 #include <sys/timerfd.h>
 #include <math.h>
 #include <poll.h>
+#include <time.h>
 #include <linux/input-event-codes.h>
 
 #define CSD_TITLEBAR_HEIGHT 32
@@ -21,6 +22,8 @@
 #define TICK_MS             30
 #define DEFAULT_REPEAT_RATE 25   /* keys/sec, used if compositor doesn't advertise */
 #define DEFAULT_REPEAT_DELAY 400 /* ms */
+#define MULTI_CLICK_MS      400  /* time window for double/triple click */
+#define MULTI_CLICK_DIST_SQ 25   /* 5px radius, squared */
 
 typedef struct mdv_buffer mdv_buffer;
 struct mdv_buffer {
@@ -70,6 +73,11 @@ struct mdv_window {
     uint32_t repeat_sym;
     uint32_t repeat_mods;
     bool repeat_armed;
+    /* Multi-click detection (BTN_LEFT). Cycles 1→2→3→1 within MULTI_CLICK_MS
+       and MULTI_CLICK_DIST. Held across press+release of one click. */
+    struct timespec last_click_time;
+    int last_click_x, last_click_y;
+    int click_count;
     mdv_callbacks cb;
 };
 
@@ -252,6 +260,26 @@ static void arm_repeat(mdv_window *w, uint32_t key, uint32_t sym, uint32_t mods)
     timerfd_settime(w->repeat_timerfd, 0, &its, NULL);
 }
 
+/* Returns the (new) click_count for the current BTN_LEFT press. Cycles
+   1→2→3→1 if the press is within MULTI_CLICK_MS of the previous one and
+   within MULTI_CLICK_DIST_SQ pixels squared. Otherwise resets to 1. */
+static int update_click_count(mdv_window *w) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    long elapsed_ms = (now.tv_sec - w->last_click_time.tv_sec) * 1000L
+                    + (now.tv_nsec - w->last_click_time.tv_nsec) / 1000000L;
+    int dx = w->mouse_x - w->last_click_x;
+    int dy = w->mouse_y - w->last_click_y;
+    bool same_spot = (dx*dx + dy*dy) <= MULTI_CLICK_DIST_SQ;
+    bool quick     = elapsed_ms >= 0 && elapsed_ms < MULTI_CLICK_MS;
+    if (quick && same_spot) w->click_count = (w->click_count >= 3) ? 1 : w->click_count + 1;
+    else                    w->click_count = 1;
+    w->last_click_time = now;
+    w->last_click_x = w->mouse_x;
+    w->last_click_y = w->mouse_y;
+    return w->click_count;
+}
+
 /* Pointer */
 static void pe(void *d,struct wl_pointer *p,uint32_t sr,struct wl_surface *sf,wl_fixed_t sx,wl_fixed_t sy){
     (void)p;(void)sf;mdv_window *w=d;w->mouse_x=wl_fixed_to_int(sx);w->mouse_y=wl_fixed_to_int(sy);
@@ -296,9 +324,11 @@ static void pb(void *d,struct wl_pointer *p,uint32_t sr,uint32_t t,uint32_t btn,
         if(edge){xdg_toplevel_resize(w->xdg_toplevel,w->seat,sr,edge);return;}
         if(csd_tb(w,w->mouse_x,w->mouse_y)){xdg_toplevel_move(w->xdg_toplevel,w->seat,sr);return;}
     }
+    int count = w->click_count;
+    if (pr && btn == BTN_LEFT) count = update_click_count(w);
     int tb=tb_h(w);
-    if(pr){if(w->mouse_y>=tb&&w->cb.on_mouse_button)w->cb.on_mouse_button(w,w->mouse_x,w->mouse_y-tb,(int)btn,w->modifiers,pr,w->cb.userdata);}
-    else{if(w->cb.on_mouse_button)w->cb.on_mouse_button(w,w->mouse_x,(w->mouse_y-tb>0?w->mouse_y-tb:0),(int)btn,w->modifiers,pr,w->cb.userdata);}
+    if(pr){if(w->mouse_y>=tb&&w->cb.on_mouse_button)w->cb.on_mouse_button(w,w->mouse_x,w->mouse_y-tb,(int)btn,w->modifiers,pr,count,w->cb.userdata);}
+    else{if(w->cb.on_mouse_button)w->cb.on_mouse_button(w,w->mouse_x,(w->mouse_y-tb>0?w->mouse_y-tb:0),(int)btn,w->modifiers,pr,count,w->cb.userdata);}
 }
 static void pa(void *d,struct wl_pointer *p,uint32_t t,uint32_t ax,wl_fixed_t val){
     (void)p;(void)t;mdv_window *w=d;int tb=tb_h(w);

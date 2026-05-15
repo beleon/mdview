@@ -27,19 +27,36 @@ struct TextSpan {
 };
 
 struct Selection {
+    enum Granularity { GRAN_CHAR, GRAN_WORD, GRAN_LINE };
+
     bool active = false, dragging = false;
     int anchor_x = 0, anchor_y = 0, extent_x = 0, extent_y = 0;
+
+    /* Granularity of the current drag (set on press, used on motion+release). */
+    Granularity granularity = GRAN_CHAR;
+    /* For GRAN_WORD / GRAN_LINE: the range under the initial click. Drags
+       extend the selection around this range rather than collapsing to a
+       single character position. */
+    int init_start_x = 0, init_start_y = 0;
+    int init_end_x = 0,   init_end_y = 0;
+
     void get_ordered(int &sx, int &sy, int &ex, int &ey) const {
         if (anchor_y < extent_y || (anchor_y == extent_y && anchor_x <= extent_x))
             { sx = anchor_x; sy = anchor_y; ex = extent_x; ey = extent_y; }
         else
             { sx = extent_x; sy = extent_y; ex = anchor_x; ey = anchor_y; }
     }
-    void clear() { active = false; dragging = false; }
+    void clear() { active = false; dragging = false; granularity = GRAN_CHAR; }
 };
 
 struct SearchHit {
     int doc_x, doc_y, width, height;
+};
+
+struct TextRange {
+    bool found = false;
+    int start_x = 0, start_y = 0;  /* doc coords; y is line center */
+    int end_x = 0,   end_y = 0;
 };
 
 struct CachedImage {
@@ -143,6 +160,87 @@ public:
         for(int j=lg.start;j<lg.end;j++){if(rx>=s[j]->x&&rx<=s[j]->x+s[j]->width)return index_to_x(*s[j],x_to_index(*s[j],rx));if(rx<s[j]->x)return s[j]->x;}return s[lg.start]->x;}
     int clip_right(const std::vector<const TextSpan*>&s,const LineGroup&lg,int rx)const{
         for(int j=lg.end-1;j>=lg.start;j--){if(rx>=s[j]->x&&rx<=s[j]->x+s[j]->width)return index_to_x(*s[j],x_to_index(*s[j],rx));if(rx>s[j]->x+s[j]->width)return s[j]->x+s[j]->width;}return s[lg.end-1]->x+s[lg.end-1]->width;}
+
+    /* Find the recorded text span whose bounding box contains (doc_x, doc_y).
+       Linear scan — fine for typical document sizes. */
+    const TextSpan *find_span_at(int doc_x, int doc_y) const {
+        for (const auto &sp : spans_) {
+            if (doc_y >= sp.y && doc_y < sp.y + sp.height &&
+                doc_x >= sp.x && doc_x < sp.x + sp.width)
+                return &sp;
+        }
+        return nullptr;
+    }
+
+    /* Returns the word boundary at (doc_x, doc_y) where a word is a maximal
+       UTF-8-aware run of non-whitespace characters within a single TextSpan.
+       Returns found=false if the click is not over text, or lands on
+       whitespace inside a span. */
+    TextRange find_word_at(int doc_x, int doc_y) const {
+        TextRange r;
+        const TextSpan *sp = find_span_at(doc_x, doc_y);
+        if (!sp) return r;
+        const std::string &t = sp->text;
+        int n = (int)t.size();
+        if (n == 0) return r;
+        int idx = x_to_index(*sp, doc_x);
+        if (idx >= n) idx = n - 1;
+        if (idx < 0) idx = 0;
+        if (isspace((unsigned char)t[idx])) return r;
+
+        /* Walk left to a whitespace (or start) — landing on the first byte
+           of a non-whitespace codepoint. */
+        int start = idx;
+        while (start > 0) {
+            int prev = start - 1;
+            while (prev > 0 && (((unsigned char)t[prev]) & 0xC0) == 0x80) prev--;
+            if (isspace((unsigned char)t[prev])) break;
+            start = prev;
+        }
+        /* Walk right past the codepoint at idx, stopping at whitespace. */
+        int end = idx;
+        while (end < n) {
+            if (isspace((unsigned char)t[end])) break;
+            int next = end + 1;
+            while (next < n && (((unsigned char)t[next]) & 0xC0) == 0x80) next++;
+            end = next;
+        }
+        if (start >= end) return r;
+        r.found = true;
+        r.start_x = index_to_x(*sp, start);
+        r.end_x   = index_to_x(*sp, end);
+        r.start_y = sp->y + sp->height / 2;
+        r.end_y   = r.start_y;
+        return r;
+    }
+
+    /* Returns the full-line range at (doc_x, doc_y): the union of all spans
+       sharing the same y-band (center within 4px), spanning from the
+       leftmost x to the rightmost x. */
+    TextRange find_line_at(int doc_x, int doc_y) const {
+        TextRange r;
+        const TextSpan *sp = find_span_at(doc_x, doc_y);
+        if (!sp) {
+            /* Clicked between spans on a line — find by y only. */
+            for (const auto &sp2 : spans_) {
+                if (doc_y >= sp2.y && doc_y < sp2.y + sp2.height) { sp = &sp2; break; }
+            }
+            if (!sp) return r;
+        }
+        int ly = sp->y + sp->height / 2;
+        int min_x = sp->x, max_x = sp->x + sp->width;
+        for (const auto &sp2 : spans_) {
+            int cy = sp2.y + sp2.height / 2;
+            if (std::abs(cy - ly) <= 4) {
+                if (sp2.x < min_x) min_x = sp2.x;
+                if (sp2.x + sp2.width > max_x) max_x = sp2.x + sp2.width;
+            }
+        }
+        r.found = true;
+        r.start_x = min_x; r.end_x = max_x;
+        r.start_y = ly;    r.end_y = ly;
+        return r;
+    }
 
     /* Case-insensitive substring search over recorded TextSpans.
        Returns hits in document coordinates, sorted top-to-bottom, left-to-right.

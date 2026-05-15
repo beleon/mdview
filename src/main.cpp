@@ -360,6 +360,44 @@ static void on_scroll(mdv_window *w, int x, int y, double dx, double dy, uint32_
     mdv_window_request_redraw(w);
 }
 
+/* Update the selection's anchor/extent during a drag, respecting granularity.
+   For CHAR: the extent simply follows the cursor (existing behavior).
+   For WORD/LINE: find the range under the cursor, then extend from the
+   initial range — if the cursor's range is before the initial one, anchor
+   to the initial range's end and extend to the cursor's start; if after,
+   anchor to the initial's start and extend to the cursor's end; if
+   overlapping (cursor still inside the initial range) keep the initial
+   range exactly. Skip updates when the cursor lands somewhere with no
+   word/line under it. */
+static void extend_selection_drag(App *a, int doc_x, int doc_y) {
+    Selection &sel = a->con.selection();
+    if (sel.granularity == Selection::GRAN_CHAR) {
+        sel.extent_x = doc_x;
+        sel.extent_y = doc_y;
+        sel.active = true;
+        return;
+    }
+    TextRange curr = (sel.granularity == Selection::GRAN_WORD)
+        ? a->con.find_word_at(doc_x, doc_y)
+        : a->con.find_line_at(doc_x, doc_y);
+    if (!curr.found) return;
+    bool before_init = (curr.start_y < sel.init_start_y) ||
+                       (curr.start_y == sel.init_start_y && curr.end_x <= sel.init_start_x);
+    bool after_init  = (curr.end_y > sel.init_end_y) ||
+                       (curr.end_y == sel.init_end_y && curr.start_x >= sel.init_end_x);
+    if (before_init) {
+        sel.anchor_x = sel.init_end_x;   sel.anchor_y = sel.init_end_y;
+        sel.extent_x = curr.start_x;     sel.extent_y = curr.start_y;
+    } else if (after_init) {
+        sel.anchor_x = sel.init_start_x; sel.anchor_y = sel.init_start_y;
+        sel.extent_x = curr.end_x;       sel.extent_y = curr.end_y;
+    } else {
+        sel.anchor_x = sel.init_start_x; sel.anchor_y = sel.init_start_y;
+        sel.extent_x = sel.init_end_x;   sel.extent_y = sel.init_end_y;
+    }
+    sel.active = true;
+}
+
 static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
     App *a = (App*)ud;
     a->mouse_x = x; a->mouse_y = y;
@@ -383,9 +421,9 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
 
     Selection &sel = a->con.selection();
     if (sel.dragging) {
-        sel.extent_x = (int)((x + a->scroll_x) / a->zoom);
-        sel.extent_y = (int)((y + a->scroll_y) / a->zoom);
-        sel.active = true;
+        int dx2 = (int)((x + a->scroll_x) / a->zoom);
+        int dy2 = (int)((y + a->scroll_y) / a->zoom);
+        extend_selection_drag(a, dx2, dy2);
         mdv_window_request_redraw(w); return;
     }
 
@@ -395,7 +433,7 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
     if (a->doc->on_mouse_over(dx2, dy2, dx2, dy2, rb)) mdv_window_request_redraw(w);
 }
 
-static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods, bool pr, void *ud) {
+static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods, bool pr, int count, void *ud) {
     App *a = (App*)ud;
     if (btn == BTN_LEFT) {
         if (pr) {
@@ -418,6 +456,36 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
 
             Selection &sel = a->con.selection();
             int dx = (int)((x + a->scroll_x) / a->zoom), dy = (int)((y + a->scroll_y) / a->zoom);
+
+            /* Double-click → word; triple-click → line. Shift falls through to
+               char-level extend (the existing shift+click behavior). */
+            if (count == 2 && !(mods & MDV_MOD_SHIFT)) {
+                TextRange tr = a->con.find_word_at(dx, dy);
+                if (tr.found) {
+                    sel.granularity = Selection::GRAN_WORD;
+                    sel.init_start_x = tr.start_x; sel.init_start_y = tr.start_y;
+                    sel.init_end_x   = tr.end_x;   sel.init_end_y   = tr.end_y;
+                    sel.anchor_x = tr.start_x; sel.anchor_y = tr.start_y;
+                    sel.extent_x = tr.end_x;   sel.extent_y = tr.end_y;
+                    sel.active = true; sel.dragging = true;
+                    mdv_window_request_redraw(w);
+                    return;
+                }
+            } else if (count == 3 && !(mods & MDV_MOD_SHIFT)) {
+                TextRange tr = a->con.find_line_at(dx, dy);
+                if (tr.found) {
+                    sel.granularity = Selection::GRAN_LINE;
+                    sel.init_start_x = tr.start_x; sel.init_start_y = tr.start_y;
+                    sel.init_end_x   = tr.end_x;   sel.init_end_y   = tr.end_y;
+                    sel.anchor_x = tr.start_x; sel.anchor_y = tr.start_y;
+                    sel.extent_x = tr.end_x;   sel.extent_y = tr.end_y;
+                    sel.active = true; sel.dragging = true;
+                    mdv_window_request_redraw(w);
+                    return;
+                }
+            }
+
+            sel.granularity = Selection::GRAN_CHAR;
             if ((mods & MDV_MOD_SHIFT) && sel.active) { sel.extent_x = dx; sel.extent_y = dy; sel.dragging = true; }
             else { sel.anchor_x = dx; sel.anchor_y = dy; sel.extent_x = dx; sel.extent_y = dy; sel.dragging = true; sel.active = false; }
             mdv_window_request_redraw(w);
@@ -428,8 +496,12 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
             if (sel.dragging) {
                 sel.dragging = false; a->autoscroll_dir = 0; a->ptr_outside = false;
                 mdv_window_set_tick_enabled(w, tick_on(a));
-                int ddx = sel.anchor_x - sel.extent_x, ddy = sel.anchor_y - sel.extent_y;
-                if (ddx*ddx + ddy*ddy < 16) sel.clear();
+                /* Tiny char-level drags clear the selection (treats it as a
+                   click, not a drag). Word/line selections are kept whole. */
+                if (sel.granularity == Selection::GRAN_CHAR) {
+                    int ddx = sel.anchor_x - sel.extent_x, ddy = sel.anchor_y - sel.extent_y;
+                    if (ddx*ddx + ddy*ddy < 16) sel.clear();
+                }
                 mdv_window_request_redraw(w);
             }
         }
@@ -454,9 +526,10 @@ static void on_pointer_enter(mdv_window *w, int x, int y, void *ud) {
     mdv_window_set_tick_enabled(w, tick_on(a));
     Selection &sel = a->con.selection();
     if (sel.dragging) {
-        sel.extent_x = (int)((x + a->scroll_x) / a->zoom);
-        sel.extent_y = (int)((y + a->scroll_y) / a->zoom);
-        sel.active = true; mdv_window_request_redraw(w);
+        int dx2 = (int)((x + a->scroll_x) / a->zoom);
+        int dy2 = (int)((y + a->scroll_y) / a->zoom);
+        extend_selection_drag(a, dx2, dy2);
+        mdv_window_request_redraw(w);
     }
 }
 
@@ -473,9 +546,10 @@ static void on_tick(mdv_window *w, void *ud) {
     Selection &sel = a->con.selection();
     if (sel.dragging && a->autoscroll_dir != 0) {
         a->scroll_y += a->autoscroll_dir * AUTOSCROLL_SPD; clamp(a);
-        sel.extent_x = a->leave_x;
-        sel.extent_y = (a->autoscroll_dir < 0) ? (int)(a->scroll_y / a->zoom) : (int)((a->scroll_y + a->vp_h) / a->zoom);
-        sel.active = true; dirty = true;
+        int target_y = (a->autoscroll_dir < 0) ? (int)(a->scroll_y / a->zoom)
+                                               : (int)((a->scroll_y + a->vp_h) / a->zoom);
+        extend_selection_drag(a, a->leave_x, target_y);
+        dirty = true;
     }
     if (a->key_scrolling && a->scroll_vel != 0) { a->scroll_y += a->scroll_vel; clamp(a); dirty = true; }
     if (!tick_on(a)) mdv_window_set_tick_enabled(w, false);
