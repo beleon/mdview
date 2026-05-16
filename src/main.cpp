@@ -931,14 +931,16 @@ static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
 
     cairo_save(cr);
     /* Clip + translate so doc rendering happens in the doc area only
-       (right of sidebar, above status bar). */
-    cairo_rectangle(cr, tw, 0, a->vp_w, a->vp_h); cairo_clip(cr);
+       (right of sidebar). We deliberately clip all the way down to hh
+       rather than vp_h — the status bar is drawn afterwards and overlays
+       the bottom STATUS_H pixels, so anything the doc paints there is
+       hidden. This avoids a thin "no draw" band at vp_h - 1 that some
+       layouts produce when cairo and litehtml disagree on the exact
+       clip boundary by a pixel. */
+    cairo_rectangle(cr, tw, 0, a->vp_w, hh); cairo_clip(cr);
     cairo_translate(cr, tw, 0);
     cairo_scale(cr, a->zoom, a->zoom);
 
-    /* Cover the entire document with the litehtml clip so it doesn't cull
-       any element near the viewport bottom. Cairo's clip above is what
-       actually limits visible drawing to vp_w × vp_h. */
     litehtml::position clip(0, 0, a->doc_w, a->doc_h);
     a->con.set_render_cr(cr);
     a->doc->draw((litehtml::uint_ptr)cr, -dsx, -dsy, &clip);
