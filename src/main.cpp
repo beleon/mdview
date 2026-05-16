@@ -936,13 +936,10 @@ static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
     cairo_translate(cr, tw, 0);
     cairo_scale(cr, a->zoom, a->zoom);
 
-    /* Pad the litehtml clip by 1 cairo unit on each side so elements
-       straddling the viewport's bottom (after the int truncation when
-       dividing vp_h by zoom) still get painted. Cairo's own clip stays at
-       exactly vp_h, so we never draw past the doc area. */
-    int rw = (int)(a->vp_w / a->zoom) + 1;
-    int rh = (int)(a->vp_h / a->zoom) + 1;
-    litehtml::position clip(0, 0, rw, rh);
+    /* Cover the entire document with the litehtml clip so it doesn't cull
+       any element near the viewport bottom. Cairo's clip above is what
+       actually limits visible drawing to vp_w × vp_h. */
+    litehtml::position clip(0, 0, a->doc_w, a->doc_h);
     a->con.set_render_cr(cr);
     a->doc->draw((litehtml::uint_ptr)cr, -dsx, -dsy, &clip);
     a->con.set_render_cr(nullptr);
