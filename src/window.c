@@ -51,7 +51,7 @@ struct mdv_window {
     struct xkb_context *xkb_ctx; struct xkb_keymap *xkb_keymap; struct xkb_state *xkb_state;
     int mouse_x, mouse_y; uint32_t modifiers, last_serial;
     struct wl_cursor_theme *cursor_theme; struct wl_surface *cursor_surface;
-    struct wl_cursor *cursor_default, *cursor_text, *cursor_pointer, *cursor_current;
+    struct wl_cursor *cursor_default, *cursor_text, *cursor_current;
     struct wl_cursor *cursor_nw, *cursor_ne, *cursor_sw, *cursor_se;
     struct wl_cursor *cursor_ns, *cursor_ew;
     /* Pinch gesture */
@@ -547,7 +547,6 @@ mdv_window *mdv_window_create(const char *title,int width,int height,const mdv_c
         w->cursor_surface=wl_compositor_create_surface(w->compositor);
         w->cursor_default=wl_cursor_theme_get_cursor(w->cursor_theme,"default");
         w->cursor_text=wl_cursor_theme_get_cursor(w->cursor_theme,"text");
-        w->cursor_pointer=wl_cursor_theme_get_cursor(w->cursor_theme,"pointer");
         if(!w->cursor_default)w->cursor_default=wl_cursor_theme_get_cursor(w->cursor_theme,"left_ptr");
         w->cursor_nw=wl_cursor_theme_get_cursor(w->cursor_theme,"nw_corner");
         if(!w->cursor_nw)w->cursor_nw=wl_cursor_theme_get_cursor(w->cursor_theme,"top_left_corner");
@@ -674,7 +673,7 @@ void mdv_window_copy_to_clipboard(mdv_window *w,const char *text){
 }
 void mdv_window_set_cursor(mdv_window *w,const char *name){
     if(!w->cursor_theme)return;struct wl_cursor *c=NULL;
-    if(!strcmp(name,"text"))c=w->cursor_text;else if(!strcmp(name,"pointer"))c=w->cursor_pointer;else c=w->cursor_default;
+    if(!strcmp(name,"text"))c=w->cursor_text;else c=w->cursor_default;
     if(!c)c=w->cursor_default; set_cur(w, c);
 }
 int mdv_window_watch_fd(mdv_window *w, int fd, mdv_pollfd_cb cb, void *ud) {

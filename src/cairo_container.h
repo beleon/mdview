@@ -18,7 +18,7 @@
 
 struct CairoFont {
     PangoFontDescription *desc;
-    int size; bool underline, strikethrough;
+    bool underline, strikethrough;
     int ascent, descent, height, x_height;
 };
 
@@ -381,7 +381,6 @@ public:
         pango_font_description_set_absolute_size(f->desc, (int)(descr.size * PANGO_SCALE));
         pango_font_description_set_weight(f->desc, (PangoWeight)descr.weight);
         pango_font_description_set_style(f->desc, descr.style==litehtml::font_style_italic?PANGO_STYLE_ITALIC:PANGO_STYLE_NORMAL);
-        f->size = (int)descr.size;
         f->underline = (descr.decoration_line & litehtml::text_decoration_line_underline) != 0;
         f->strikethrough = (descr.decoration_line & litehtml::text_decoration_line_line_through) != 0;
         pango_layout_set_font_description(pl_, f->desc);

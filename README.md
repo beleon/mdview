@@ -32,12 +32,12 @@ Takes a single CLI argument — a path to a `.md` file — converts it to HTML v
 - Async syntax highlighting of code blocks via `bat` / `pygmentize` / `highlight` / `source-highlight` (whichever is installed); pass `--no-highlight` or set `MDVIEW_NO_HIGHLIGHT=1` to disable
 - Click links to open in your default browser (`xdg-open`), or in-document `#anchor` links to scroll to that heading
 - Live reload on file change (inotify); disable with `--no-reload`
-- Persistent zoom + window size between sessions (`~/.config/mdview/state`)
+- Persistent state (zoom, window size, dark mode, search flags) between sessions (`~/.config/mdview/state`)
 - Help overlay with **F1** or **?**
 - Status bar showing filename, scroll %, zoom %, and highlight progress
 - Outline / TOC sidebar (Ctrl+T) listing h1-h3 headings; click to jump
 - Dark mode (Ctrl+D), persisted
-- Right-click context menu (Open Link / Copy / Find / Reload / Toggle Dark)
+- Right-click context menu (Open Link / Copy Link URL / Copy / Select All / Find / Reload / Toggle Dark)
 - Whole-word and regex search modes (Alt+W / Alt+R) alongside case-sensitive (Alt+C)
 - HiDPI-aware rendering via `wl_surface.preferred_buffer_scale` (integer scales)
 - Detaches from the launching terminal (VS Code style); `-f` / `--foreground` keeps it attached
@@ -47,7 +47,7 @@ Takes a single CLI argument — a path to a `.md` file — converts it to HTML v
 ### Prerequisites
 
 - CMake ≥ 3.16, C++17 compiler
-- `libwayland-dev libwayland-cursor0 wayland-protocols libxkbcommon-dev libcairo2-dev libpango1.0-dev`
+- `libwayland-dev libwayland-cursor0 wayland-protocols libxkbcommon-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf-2.0-dev librsvg2-dev`
 
 ### Build
 
@@ -84,9 +84,9 @@ chmod +x build.sh
 | `Ctrl+F` | Open find bar (Esc to close) |
 | `Enter` / `F3` | Next match (while find bar is open) |
 | `Shift+Enter` / `Shift+F3` | Previous match |
-| `Alt+C` | Toggle case-sensitive search |
-| `Alt+W` | Toggle whole-word search |
-| `Alt+R` | Toggle regex search |
+| `Alt+C` | Toggle case-sensitive search (while find bar is open) |
+| `Alt+W` | Toggle whole-word search (while find bar is open) |
+| `Alt+R` | Toggle regex search (while find bar is open) |
 | `Ctrl+Backspace` | Delete word in find bar |
 | `Ctrl++` / `Ctrl+=` | Zoom in |
 | `Ctrl+-` | Zoom out |
@@ -121,6 +121,8 @@ Only libraries already loaded in any Wayland session:
 - `libxkbcommon.so`
 - `libcairo.so`
 - `libpangocairo-1.0.so` / `libpango-1.0.so`
+- `libgdk_pixbuf-2.0.so` (image loading)
+- `librsvg-2.0.so` (SVG rendering)
 
 ## License
 

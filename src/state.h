@@ -9,7 +9,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <sstream>
 #include <string>
 
 namespace mdv {

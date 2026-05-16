@@ -19,7 +19,6 @@
 #include "state.h"
 #include "livereload.h"
 extern "C" {
-#include "md4c.h"
 #include "md4c-html.h"
 #include "window.h"
 }
@@ -195,7 +194,6 @@ struct App {
 
     bool sb_v_drag = false, sb_h_drag = false;
     double sb_drag_off = 0;
-    bool ptr_outside = false;
     int autoscroll_dir = 0, leave_x = 0;
     double scroll_vel = 0;
     bool key_scrolling = false;
@@ -326,8 +324,7 @@ static void do_layout(App *a) {
    viewport, clamp() may pull the result to a valid range, which accepts a
    small focus-point drift as the price of not showing whitespace where
    content used to be. */
-static double zoom_axis(double scroll, double old_zoom, double new_zoom,
-                        int /*doc_size*/, int /*vp*/, int focus) {
+static double zoom_axis(double scroll, double old_zoom, double new_zoom, int focus) {
     double doc_pt = (scroll + focus) / old_zoom;
     return doc_pt * new_zoom - focus;
 }
@@ -336,8 +333,8 @@ static void apply_zoom(App *a, double nz, int fx, int fy) {
     nz = std::clamp(nz, ZOOM_MIN, ZOOM_MAX);
     if (std::abs(nz - a->zoom) < 0.001) return;
     double oz = a->zoom;
-    a->scroll_x = zoom_axis(a->scroll_x, oz, nz, a->doc_w, a->vp_w, fx);
-    a->scroll_y = zoom_axis(a->scroll_y, oz, nz, a->doc_h, a->vp_h, fy);
+    a->scroll_x = zoom_axis(a->scroll_x, oz, nz, fx);
+    a->scroll_y = zoom_axis(a->scroll_y, oz, nz, fy);
     a->zoom = nz;
     a->match_count_dirty = true;  /* font sizes unchanged but x positions scaled inside spans */
     clamp(a);
@@ -1243,7 +1240,7 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
             if (a->sb_h_drag) { a->sb_h_drag = false; mdv_window_request_redraw(w); return; }
             Selection &sel = a->con.selection();
             if (sel.dragging) {
-                sel.dragging = false; a->autoscroll_dir = 0; a->ptr_outside = false;
+                sel.dragging = false; a->autoscroll_dir = 0;
                 mdv_window_set_tick_enabled(w, tick_on(a));
                 /* Tiny char-level drags clear the selection (treats it as a
                    click, not a drag). Word/line selections are kept whole. */
@@ -1265,13 +1262,13 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
 static void on_pointer_leave(mdv_window *w, int lx, int ly, void *ud) {
     App *a = (App*)ud; Selection &sel = a->con.selection();
     if (!sel.dragging) return;
-    a->ptr_outside = true; a->leave_x = (int)((lx - toc_w(a) + a->scroll_x) / a->zoom);
+    a->leave_x = (int)((lx - toc_w(a) + a->scroll_x) / a->zoom);
     a->autoscroll_dir = (ly < a->vp_h / 2) ? -1 : 1;
     mdv_window_set_tick_enabled(w, true);
 }
 
 static void on_pointer_enter(mdv_window *w, int x, int y, void *ud) {
-    App *a = (App*)ud; a->ptr_outside = false; a->autoscroll_dir = 0;
+    App *a = (App*)ud; a->autoscroll_dir = 0;
     mdv_window_set_tick_enabled(w, tick_on(a));
     Selection &sel = a->con.selection();
     if (sel.dragging) {
@@ -1394,7 +1391,7 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
         case XKB_KEY_Page_Down: case XKB_KEY_Page_Up:
             stop_ks(a, w); break;
         case XKB_KEY_space:
-            stop_ks(a, w); a->space_held = false; break;
+            stop_ks(a, w); break;  /* stop_ks already clears space_held */
         case XKB_KEY_Shift_L: case XKB_KEY_Shift_R:
             if (a->space_held && a->key_scrolling)
                 a->scroll_vel = PAGE_SPD;
