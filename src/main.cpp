@@ -62,7 +62,7 @@ static std::string md2html(const std::string &md, bool dark) {
     const Theme &t = dark ? THEME_DARK : THEME_LIGHT;
     char css[2048];
     snprintf(css, sizeof(css),
-        "body{font-family:Sans;font-size:16px;line-height:1.6;color:%s;background:%s;padding:20px 20px 0 20px}"
+        "body{font-family:Sans;font-size:16px;line-height:1.6;color:%s;background:%s;padding:20px}"
         "h1{font-size:32px;margin-top:24px;margin-bottom:12px;border-bottom:1px solid %s;padding-bottom:8px}"
         "h2{font-size:26px;margin-top:20px;margin-bottom:10px;border-bottom:1px solid %s;padding-bottom:6px}"
         "h3{font-size:22px;margin-top:16px;margin-bottom:8px}h4{font-size:18px;margin-top:14px;margin-bottom:6px}"
