@@ -3,6 +3,7 @@
 #include "xdg-shell-protocol.h"
 #include "xdg-decoration-protocol.h"
 #include "pointer-gestures-protocol.h"
+#include "cursor-shape-protocol.h"
 
 #include <pango/pangocairo.h>
 #include <wayland-cursor.h>
@@ -25,6 +26,22 @@
 #define DEFAULT_REPEAT_DELAY 400 /* ms */
 #define MULTI_CLICK_MS      400  /* time window for double/triple click */
 #define MULTI_CLICK_DIST_SQ 25   /* 5px radius, squared */
+
+/* Cursor identity. With cursor-shape-v1, the compositor draws the user's
+   actual themed cursor; we just say which shape. Without it we fall back to
+   wl_cursor_theme and an embedded buffer. */
+typedef enum {
+    MDV_CURSOR_DEFAULT,
+    MDV_CURSOR_TEXT,
+    MDV_CURSOR_POINTER,
+    MDV_CURSOR_NW_RESIZE,
+    MDV_CURSOR_NE_RESIZE,
+    MDV_CURSOR_SW_RESIZE,
+    MDV_CURSOR_SE_RESIZE,
+    MDV_CURSOR_NS_RESIZE,
+    MDV_CURSOR_EW_RESIZE,
+    MDV_CURSOR_COUNT,
+} mdv_cursor_kind;
 
 typedef struct mdv_buffer mdv_buffer;
 struct mdv_buffer {
@@ -51,10 +68,19 @@ struct mdv_window {
     struct wl_pointer *pointer; struct wl_keyboard *keyboard;
     struct xkb_context *xkb_ctx; struct xkb_keymap *xkb_keymap; struct xkb_state *xkb_state;
     int mouse_x, mouse_y; uint32_t modifiers, last_serial;
+    /* The cursor-shape protocol requires the most recent wl_pointer.enter
+       serial specifically; last_serial gets clobbered by button events. */
+    uint32_t last_enter_serial;
+    /* Preferred cursor path: compositor draws the user's theme via shape-v1.
+       Set only if the compositor exposes wp_cursor_shape_manager_v1 AND we
+       have a pointer to bind it against. */
+    struct wp_cursor_shape_manager_v1 *cursor_shape_manager;
+    struct wp_cursor_shape_device_v1  *cursor_shape_device;
+    /* Fallback: wl_cursor_theme with our own surface. Only loaded if the
+       shape protocol isn't available. */
     struct wl_cursor_theme *cursor_theme; struct wl_surface *cursor_surface;
-    struct wl_cursor *cursor_default, *cursor_text, *cursor_pointer, *cursor_current;
-    struct wl_cursor *cursor_nw, *cursor_ne, *cursor_sw, *cursor_se;
-    struct wl_cursor *cursor_ns, *cursor_ew;
+    struct wl_cursor *cursor_table[MDV_CURSOR_COUNT];
+    mdv_cursor_kind cursor_current;
     /* Pinch gesture */
     struct zwp_pointer_gestures_v1 *pointer_gestures;
     struct zwp_pointer_gesture_pinch_v1 *pinch_gesture;
@@ -210,21 +236,51 @@ static uint32_t csd_resize_edge(mdv_window *w, int sx, int sy) {
     return 0;
 }
 
-static void apply_cur(mdv_window *w, struct wl_cursor *c) {
-    if(!c||!w->cursor_surface||!w->pointer)return;
-    struct wl_cursor_image *i=c->images[0]; struct wl_buffer *b=wl_cursor_image_get_buffer(i);
+static const uint32_t SHAPE_FOR[MDV_CURSOR_COUNT] = {
+    [MDV_CURSOR_DEFAULT]   = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT,
+    [MDV_CURSOR_TEXT]      = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_TEXT,
+    [MDV_CURSOR_POINTER]   = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER,
+    [MDV_CURSOR_NW_RESIZE] = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NW_RESIZE,
+    [MDV_CURSOR_NE_RESIZE] = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NE_RESIZE,
+    [MDV_CURSOR_SW_RESIZE] = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_SW_RESIZE,
+    [MDV_CURSOR_SE_RESIZE] = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_SE_RESIZE,
+    [MDV_CURSOR_NS_RESIZE] = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NS_RESIZE,
+    [MDV_CURSOR_EW_RESIZE] = WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_EW_RESIZE,
+};
+
+/* Draw the cursor for `kind` right now. Preferred path delegates to the
+   compositor via wp_cursor_shape_device_v1, which means the user's actual
+   cursor theme is honoured (this is what every other Wayland app does on
+   modern compositors — Hyprland/KDE/Sway/etc). Fallback path loads
+   wl_cursor_theme ourselves and attaches an SHM-backed cursor surface. */
+static void apply_cursor_kind(mdv_window *w, mdv_cursor_kind kind) {
+    if (!w->pointer) return;
+    if (w->cursor_shape_device) {
+        wp_cursor_shape_device_v1_set_shape(w->cursor_shape_device,
+                                            w->last_enter_serial,
+                                            SHAPE_FOR[kind]);
+        return;
+    }
+    if (!w->cursor_surface) return;
+    struct wl_cursor *c = w->cursor_table[kind];
+    if (!c) c = w->cursor_table[MDV_CURSOR_DEFAULT];
+    if (!c) return;
+    struct wl_cursor_image *i = c->images[0];
+    struct wl_buffer *b = wl_cursor_image_get_buffer(i);
     if (!b) return;
-    wl_surface_attach(w->cursor_surface,b,0,0);
-    wl_surface_damage(w->cursor_surface,0,0,(int)i->width,(int)i->height);
+    wl_surface_attach(w->cursor_surface, b, 0, 0);
+    wl_surface_damage(w->cursor_surface, 0, 0, (int)i->width, (int)i->height);
     wl_surface_commit(w->cursor_surface);
-    wl_pointer_set_cursor(w->pointer,w->last_serial,w->cursor_surface,(int)i->hotspot_x,(int)i->hotspot_y);
+    wl_pointer_set_cursor(w->pointer, w->last_enter_serial, w->cursor_surface,
+                          (int)i->hotspot_x, (int)i->hotspot_y);
 }
 
-/* Switch cursor only if it would actually change. */
-static void set_cur(mdv_window *w, struct wl_cursor *c) {
-    if (!c || c == w->cursor_current) return;
-    w->cursor_current = c;
-    apply_cur(w, c);
+/* Switch to a different cursor kind. No-op if it's already current — the
+   shape protocol allows redundant set_shape but skipping cuts traffic. */
+static void set_cursor_kind(mdv_window *w, mdv_cursor_kind kind) {
+    if (kind == w->cursor_current) return;
+    w->cursor_current = kind;
+    apply_cursor_kind(w, kind);
 }
 
 /* XDG */
@@ -299,7 +355,8 @@ static int update_click_count(mdv_window *w) {
 /* Pointer */
 static void pe(void *d,struct wl_pointer *p,uint32_t sr,struct wl_surface *sf,wl_fixed_t sx,wl_fixed_t sy){
     (void)p;(void)sf;mdv_window *w=d;w->mouse_x=wl_fixed_to_int(sx);w->mouse_y=wl_fixed_to_int(sy);
-    w->last_serial=sr;apply_cur(w,w->cursor_current?w->cursor_current:w->cursor_default);
+    w->last_serial=sr;w->last_enter_serial=sr;
+    apply_cursor_kind(w,w->cursor_current);
     int tb=tb_h(w);if(w->cb.on_pointer_enter&&w->mouse_y>=tb)w->cb.on_pointer_enter(w,w->mouse_x,w->mouse_y-tb,w->cb.userdata);
 }
 static void pl(void *d,struct wl_pointer *p,uint32_t sr,struct wl_surface *sf){
@@ -314,20 +371,21 @@ static void pm(void *d,struct wl_pointer *p,uint32_t t,wl_fixed_t sx,wl_fixed_t 
     (void)p;(void)t;mdv_window *w=d;w->mouse_x=wl_fixed_to_int(sx);w->mouse_y=wl_fixed_to_int(sy);
     if(w->use_csd){
         uint32_t edge=csd_resize_edge(w,w->mouse_x,w->mouse_y);
-        struct wl_cursor *ec=NULL;
+        mdv_cursor_kind ek = MDV_CURSOR_DEFAULT;
+        bool over_edge = true;
         switch(edge){
-        case XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT:     ec=w->cursor_nw; break;
-        case XDG_TOPLEVEL_RESIZE_EDGE_TOP_RIGHT:    ec=w->cursor_ne; break;
-        case XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT:  ec=w->cursor_sw; break;
-        case XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_RIGHT: ec=w->cursor_se; break;
-        case XDG_TOPLEVEL_RESIZE_EDGE_TOP: case XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM: ec=w->cursor_ns; break;
-        case XDG_TOPLEVEL_RESIZE_EDGE_LEFT: case XDG_TOPLEVEL_RESIZE_EDGE_RIGHT: ec=w->cursor_ew; break;
+        case XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT:     ek=MDV_CURSOR_NW_RESIZE; break;
+        case XDG_TOPLEVEL_RESIZE_EDGE_TOP_RIGHT:    ek=MDV_CURSOR_NE_RESIZE; break;
+        case XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT:  ek=MDV_CURSOR_SW_RESIZE; break;
+        case XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_RIGHT: ek=MDV_CURSOR_SE_RESIZE; break;
+        case XDG_TOPLEVEL_RESIZE_EDGE_TOP: case XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM: ek=MDV_CURSOR_NS_RESIZE; break;
+        case XDG_TOPLEVEL_RESIZE_EDGE_LEFT: case XDG_TOPLEVEL_RESIZE_EDGE_RIGHT: ek=MDV_CURSOR_EW_RESIZE; break;
+        default: over_edge = false; break;
         }
-        if(ec){ set_cur(w, ec); return; }
-        if(w->cursor_current==w->cursor_nw||w->cursor_current==w->cursor_ne||
-           w->cursor_current==w->cursor_sw||w->cursor_current==w->cursor_se||
-           w->cursor_current==w->cursor_ns||w->cursor_current==w->cursor_ew){
-            set_cur(w, w->cursor_default);
+        if(over_edge){ set_cursor_kind(w, ek); return; }
+        if(w->cursor_current >= MDV_CURSOR_NW_RESIZE
+        && w->cursor_current <= MDV_CURSOR_EW_RESIZE){
+            set_cursor_kind(w, MDV_CURSOR_DEFAULT);
         }
     }
     int tb=tb_h(w);if(w->mouse_y>=tb&&w->cb.on_mouse_move)w->cb.on_mouse_move(w,w->mouse_x,w->mouse_y-tb,w->cb.userdata);
@@ -429,6 +487,9 @@ static void sc(void *d,struct wl_seat *s,uint32_t c){
             w->pinch_gesture=zwp_pointer_gestures_v1_get_pinch_gesture(w->pointer_gestures,w->pointer);
             zwp_pointer_gesture_pinch_v1_add_listener(w->pinch_gesture,&pinch_listener,w);
         }
+        if(w->cursor_shape_manager){
+            w->cursor_shape_device=wp_cursor_shape_manager_v1_get_pointer(w->cursor_shape_manager,w->pointer);
+        }
     }
     if((c&WL_SEAT_CAPABILITY_KEYBOARD)&&!w->keyboard){w->keyboard=wl_seat_get_keyboard(s);wl_keyboard_add_listener(w->keyboard,&kbl,w);}
 }
@@ -476,6 +537,7 @@ static void rg(void *d,struct wl_registry *r,uint32_t name,const char *iface,uin
     else if(!strcmp(iface,zxdg_decoration_manager_v1_interface.name))w->decoration_manager=wl_registry_bind(r,name,&zxdg_decoration_manager_v1_interface,1);
     else if(!strcmp(iface,wl_data_device_manager_interface.name))w->data_device_manager=wl_registry_bind(r,name,&wl_data_device_manager_interface,3);
     else if(!strcmp(iface,zwp_pointer_gestures_v1_interface.name))w->pointer_gestures=wl_registry_bind(r,name,&zwp_pointer_gestures_v1_interface,1);
+    else if(!strcmp(iface,wp_cursor_shape_manager_v1_interface.name))w->cursor_shape_manager=wl_registry_bind(r,name,&wp_cursor_shape_manager_v1_interface,1);
 }
 static void rr(void *d,struct wl_registry *r,uint32_t n){(void)d;(void)r;(void)n;}
 static const struct wl_registry_listener rl={.global=rg,.global_remove=rr};
@@ -543,31 +605,39 @@ mdv_window *mdv_window_create(const char *title,int width,int height,const mdv_c
         zxdg_toplevel_decoration_v1_set_mode(w->toplevel_decoration,ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
     }else w->use_csd=true;
     if(w->data_device_manager&&w->seat)w->data_device=wl_data_device_manager_get_data_device(w->data_device_manager,w->seat);
-    w->cursor_theme=wl_cursor_theme_load(NULL,24,w->shm);
-    if(w->cursor_theme){
-        w->cursor_surface=wl_compositor_create_surface(w->compositor);
-        w->cursor_default=wl_cursor_theme_get_cursor(w->cursor_theme,"default");
-        w->cursor_text=wl_cursor_theme_get_cursor(w->cursor_theme,"text");
-        if(!w->cursor_text)w->cursor_text=wl_cursor_theme_get_cursor(w->cursor_theme,"xterm");
-        if(!w->cursor_text)w->cursor_text=wl_cursor_theme_get_cursor(w->cursor_theme,"ibeam");
-        w->cursor_pointer=wl_cursor_theme_get_cursor(w->cursor_theme,"pointer");
-        if(!w->cursor_pointer)w->cursor_pointer=wl_cursor_theme_get_cursor(w->cursor_theme,"hand1");
-        if(!w->cursor_pointer)w->cursor_pointer=wl_cursor_theme_get_cursor(w->cursor_theme,"hand2");
-        if(!w->cursor_default)w->cursor_default=wl_cursor_theme_get_cursor(w->cursor_theme,"left_ptr");
-        w->cursor_nw=wl_cursor_theme_get_cursor(w->cursor_theme,"nw_corner");
-        if(!w->cursor_nw)w->cursor_nw=wl_cursor_theme_get_cursor(w->cursor_theme,"top_left_corner");
-        w->cursor_ne=wl_cursor_theme_get_cursor(w->cursor_theme,"ne_corner");
-        if(!w->cursor_ne)w->cursor_ne=wl_cursor_theme_get_cursor(w->cursor_theme,"top_right_corner");
-        w->cursor_sw=wl_cursor_theme_get_cursor(w->cursor_theme,"sw_corner");
-        if(!w->cursor_sw)w->cursor_sw=wl_cursor_theme_get_cursor(w->cursor_theme,"bottom_left_corner");
-        w->cursor_se=wl_cursor_theme_get_cursor(w->cursor_theme,"se_corner");
-        if(!w->cursor_se)w->cursor_se=wl_cursor_theme_get_cursor(w->cursor_theme,"bottom_right_corner");
-        w->cursor_ns=wl_cursor_theme_get_cursor(w->cursor_theme,"ns-resize");
-        if(!w->cursor_ns)w->cursor_ns=wl_cursor_theme_get_cursor(w->cursor_theme,"sb_v_double_arrow");
-        w->cursor_ew=wl_cursor_theme_get_cursor(w->cursor_theme,"ew-resize");
-        if(!w->cursor_ew)w->cursor_ew=wl_cursor_theme_get_cursor(w->cursor_theme,"sb_h_double_arrow");
-        w->cursor_current=w->cursor_default;
+    /* Only load the wl_cursor_theme path if the compositor doesn't expose
+       cursor-shape-v1 — when it does, the compositor draws cursors itself
+       using the user's actual theme. Loading our own theme would just be
+       a wasted-memory fallback we'd never use. */
+    if (!w->cursor_shape_manager) {
+        const char *theme_name = getenv("XCURSOR_THEME");
+        int cursor_size = 24;
+        const char *size_env = getenv("XCURSOR_SIZE");
+        if (size_env) { int sz = atoi(size_env); if (sz > 0) cursor_size = sz; }
+        w->cursor_theme = wl_cursor_theme_load(theme_name, cursor_size, w->shm);
+        if (w->cursor_theme) {
+            w->cursor_surface = wl_compositor_create_surface(w->compositor);
+            struct wl_cursor_theme *t = w->cursor_theme;
+            #define LOAD(slot, ...) do { \
+                const char *names[] = { __VA_ARGS__, NULL }; \
+                for (const char **n = names; *n; n++) { \
+                    w->cursor_table[slot] = wl_cursor_theme_get_cursor(t, *n); \
+                    if (w->cursor_table[slot]) break; \
+                } \
+            } while (0)
+            LOAD(MDV_CURSOR_DEFAULT,   "default", "left_ptr");
+            LOAD(MDV_CURSOR_TEXT,      "text", "xterm", "ibeam");
+            LOAD(MDV_CURSOR_POINTER,   "pointer", "hand1", "hand2");
+            LOAD(MDV_CURSOR_NW_RESIZE, "nw_corner", "top_left_corner", "nw-resize");
+            LOAD(MDV_CURSOR_NE_RESIZE, "ne_corner", "top_right_corner", "ne-resize");
+            LOAD(MDV_CURSOR_SW_RESIZE, "sw_corner", "bottom_left_corner", "sw-resize");
+            LOAD(MDV_CURSOR_SE_RESIZE, "se_corner", "bottom_right_corner", "se-resize");
+            LOAD(MDV_CURSOR_NS_RESIZE, "ns-resize", "sb_v_double_arrow");
+            LOAD(MDV_CURSOR_EW_RESIZE, "ew-resize", "sb_h_double_arrow");
+            #undef LOAD
+        }
     }
+    w->cursor_current = MDV_CURSOR_DEFAULT;
     for(int i=0;i<2;i++)w->buffers[i]=bnew(w,width,height);
     wl_surface_commit(w->surface);wl_display_roundtrip(w->display);
     w->timerfd=timerfd_create(CLOCK_MONOTONIC,TFD_CLOEXEC|TFD_NONBLOCK);
@@ -589,6 +659,8 @@ void mdv_window_destroy(mdv_window *w){
     if(w->data_device_manager)wl_data_device_manager_destroy(w->data_device_manager);
     if(w->pinch_gesture)zwp_pointer_gesture_pinch_v1_destroy(w->pinch_gesture);
     if(w->pointer_gestures)zwp_pointer_gestures_v1_release(w->pointer_gestures);
+    if(w->cursor_shape_device)wp_cursor_shape_device_v1_destroy(w->cursor_shape_device);
+    if(w->cursor_shape_manager)wp_cursor_shape_manager_v1_destroy(w->cursor_shape_manager);
     if(w->cursor_surface)wl_surface_destroy(w->cursor_surface);
     if(w->cursor_theme)wl_cursor_theme_destroy(w->cursor_theme);
     if(w->toplevel_decoration)zxdg_toplevel_decoration_v1_destroy(w->toplevel_decoration);
@@ -678,11 +750,11 @@ void mdv_window_copy_to_clipboard(mdv_window *w,const char *text){
     wl_data_device_set_selection(w->data_device,w->data_source,w->last_serial);
 }
 void mdv_window_set_cursor(mdv_window *w,const char *name){
-    if(!w->cursor_theme)return;struct wl_cursor *c=NULL;
-    if      (!strcmp(name, "text"))    c = w->cursor_text;
-    else if (!strcmp(name, "pointer")) c = w->cursor_pointer;
-    else                               c = w->cursor_default;
-    if(!c)c=w->cursor_default; set_cur(w, c);
+    if (!w) return;
+    mdv_cursor_kind k = MDV_CURSOR_DEFAULT;
+    if      (!strcmp(name, "text"))    k = MDV_CURSOR_TEXT;
+    else if (!strcmp(name, "pointer")) k = MDV_CURSOR_POINTER;
+    set_cursor_kind(w, k);
 }
 int mdv_window_watch_fd(mdv_window *w, int fd, mdv_pollfd_cb cb, void *ud) {
     if (!w || fd < 0 || !cb) return -1;

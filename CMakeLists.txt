@@ -21,6 +21,7 @@ find_program(WAYLAND_SCANNER wayland-scanner)
 set(XDG_SHELL_XML "/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml")
 set(XDG_DECO_XML  "/usr/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml")
 set(PTR_GEST_XML  "/usr/share/wayland-protocols/unstable/pointer-gestures/pointer-gestures-unstable-v1.xml")
+set(CURSOR_SHAPE_XML "/usr/share/wayland-protocols/staging/cursor-shape/cursor-shape-v1.xml")
 
 set(PROTO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/protocol)
 
@@ -58,6 +59,18 @@ add_custom_command(
     OUTPUT  ${PROTO_DIR}/pointer-gestures-protocol.c
     COMMAND ${WAYLAND_SCANNER} private-code ${PTR_GEST_XML} ${PROTO_DIR}/pointer-gestures-protocol.c
     DEPENDS ${PTR_GEST_XML}
+)
+
+add_custom_command(
+    OUTPUT  ${PROTO_DIR}/cursor-shape-protocol.h
+    COMMAND ${WAYLAND_SCANNER} client-header ${CURSOR_SHAPE_XML} ${PROTO_DIR}/cursor-shape-protocol.h
+    DEPENDS ${CURSOR_SHAPE_XML}
+)
+
+add_custom_command(
+    OUTPUT  ${PROTO_DIR}/cursor-shape-protocol.c
+    COMMAND ${WAYLAND_SCANNER} private-code ${CURSOR_SHAPE_XML} ${PROTO_DIR}/cursor-shape-protocol.c
+    DEPENDS ${CURSOR_SHAPE_XML}
 )
 
 # ==============================================================================
@@ -109,6 +122,8 @@ add_executable(mdview
     ${PROTO_DIR}/xdg-decoration-protocol.h
     ${PROTO_DIR}/pointer-gestures-protocol.c
     ${PROTO_DIR}/pointer-gestures-protocol.h
+    ${PROTO_DIR}/cursor-shape-protocol.c
+    ${PROTO_DIR}/cursor-shape-protocol.h
 )
 
 target_include_directories(mdview PRIVATE
