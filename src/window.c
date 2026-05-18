@@ -388,7 +388,12 @@ static void pm(void *d,struct wl_pointer *p,uint32_t t,wl_fixed_t sx,wl_fixed_t 
             set_cursor_kind(w, MDV_CURSOR_DEFAULT);
         }
     }
-    int tb=tb_h(w);if(w->mouse_y>=tb&&w->cb.on_mouse_move)w->cb.on_mouse_move(w,w->mouse_x,w->mouse_y-tb,w->cb.userdata);
+    /* Always forward motion — including when the pointer is in the CSD title
+       bar or has been dragged out of the surface entirely (which still
+       generates motion events while a button is held, due to the implicit
+       grab). The app needs those out-of-viewport coordinates to drive
+       autoscroll during a selection drag. */
+    int tb=tb_h(w);if(w->cb.on_mouse_move)w->cb.on_mouse_move(w,w->mouse_x,w->mouse_y-tb,w->cb.userdata);
 }
 static void pb(void *d,struct wl_pointer *p,uint32_t sr,uint32_t t,uint32_t btn,uint32_t st){
     (void)p;(void)t;mdv_window *w=d;w->last_serial=sr;bool pr=(st==WL_POINTER_BUTTON_STATE_PRESSED);

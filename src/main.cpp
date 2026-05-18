@@ -1121,6 +1121,21 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
     App *a = (App*)ud;
     a->mouse_x = x; a->mouse_y = y;
 
+    /* Drag-selection autoscroll. While a button is held the compositor
+       implicitly grabs the pointer to our surface, so motion keeps coming
+       with out-of-viewport coordinates instead of a wl_pointer.leave. If
+       we're dragging a selection and the pointer has crossed above or
+       below the doc viewport, kick autoscroll and short-circuit before
+       the sidebar/menu hover branches can return on us. */
+    if (a->con.selection().dragging && (y < 0 || y >= a->vp_h)) {
+        int dx2 = (int)((x - toc_w(a) + a->scroll_x) / a->zoom);
+        a->leave_x = dx2;
+        a->autoscroll_dir = (y < 0) ? -1 : 1;
+        mdv_window_set_tick_enabled(w, true);
+        mdv_window_request_redraw(w);
+        return;
+    }
+
     /* Context menu hover: when visible, takes over cursor handling. */
     if (a->menu.visible) {
         int idx = menu_item_at(a, x, y);
@@ -1181,9 +1196,14 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
 
     Selection &sel = a->con.selection();
     if (sel.dragging) {
+        /* The out-of-viewport case was caught at the top of this function;
+           here we're guaranteed in-viewport, so cancel any prior autoscroll
+           and just extend normally. */
+        a->autoscroll_dir = 0;
         int dx2 = (int)((x_eff + a->scroll_x) / a->zoom);
         int dy2 = (int)((y + a->scroll_y) / a->zoom);
         extend_selection_drag(a, dx2, dy2);
+        mdv_window_set_tick_enabled(w, tick_on(a));
         mdv_window_request_redraw(w); return;
     }
 
