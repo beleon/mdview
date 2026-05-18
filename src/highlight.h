@@ -97,6 +97,19 @@ static inline std::vector<CodeBlock> extract_code_blocks(const std::string &html
         }
         b.raw_content = html_decode(html.substr(content_start, close - content_start));
 
+        /* The lang attribute is passed verbatim as argv to the highlighter
+           subprocess. Reject anything that could be interpreted as a flag or
+           contains non-language characters. Real lang names like "c++",
+           "c#", "f#", "objective-c" are inside the allowed set. */
+        if (!b.lang.empty()) {
+            bool ok = b.lang[0] != '-';
+            for (char c : b.lang) {
+                if (!(isalnum((unsigned char)c) || c == '+' || c == '-'
+                   || c == '_' || c == '#' || c == '.')) { ok = false; break; }
+            }
+            if (!ok) b.lang.clear();
+        }
+
         blocks.push_back(std::move(b));
         pos = close + sizeof(CLOSE) - 1;
     }
@@ -434,23 +447,43 @@ private:
     }
 
     bool launch_job(Job &job) {
-        int in_pipe[2], out_pipe[2];
-        if (pipe(in_pipe) < 0) return false;
-        if (pipe(out_pipe) < 0) { close(in_pipe[0]); close(in_pipe[1]); return false; }
+        int out_pipe[2];
+        if (pipe(out_pipe) < 0) return false;
+
+        /* Stage stdin in a temp file rather than a pipe. With a pipe the
+           parent's synchronous write can deadlock against a child whose
+           own stdout pipe is full — both ends blocked. A regular file lets
+           the child consume input at its own pace regardless of how fast
+           we drain its stdout. /tmp is typically tmpfs (memory-backed). */
+        char tmpl[] = "/tmp/mdview-hl.XXXXXX";
+        int tfd = mkstemp(tmpl);
+        if (tfd < 0) { close(out_pipe[0]); close(out_pipe[1]); return false; }
+        unlink(tmpl);  /* freed on last close */
+
+        size_t total = 0;
+        while (total < job.content.size()) {
+            ssize_t n = write(tfd, job.content.data() + total,
+                              job.content.size() - total);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                close(tfd); close(out_pipe[0]); close(out_pipe[1]);
+                return false;
+            }
+            total += (size_t)n;
+        }
+        lseek(tfd, 0, SEEK_SET);
 
         pid_t pid = fork();
         if (pid < 0) {
-            close(in_pipe[0]); close(in_pipe[1]);
-            close(out_pipe[0]); close(out_pipe[1]);
+            close(tfd); close(out_pipe[0]); close(out_pipe[1]);
             return false;
         }
 
         if (pid == 0) {
             /* Child: rewire fds and exec. */
-            dup2(in_pipe[0], 0);
+            dup2(tfd, 0);
             dup2(out_pipe[1], 1);
-            close(in_pipe[0]); close(in_pipe[1]);
-            close(out_pipe[0]); close(out_pipe[1]);
+            close(tfd); close(out_pipe[0]); close(out_pipe[1]);
             int devnull = open("/dev/null", O_WRONLY);
             if (devnull >= 0) { dup2(devnull, 2); close(devnull); }
 
@@ -483,28 +516,8 @@ private:
         }
 
         /* Parent. */
-        close(in_pipe[0]);
+        close(tfd);
         close(out_pipe[1]);
-
-        /* Enlarge the stdin pipe so the whole content fits in the kernel
-           buffer; otherwise a large write could deadlock against the child's
-           own blocked stdout write. Best-effort — falls back to the default. */
-        fcntl(in_pipe[1], F_SETPIPE_SZ, (int)MAX_BLOCK_BYTES);
-
-        /* Ignore SIGPIPE in case the child exits before reading everything. */
-        signal(SIGPIPE, SIG_IGN);
-
-        size_t total = 0;
-        while (total < job.content.size()) {
-            ssize_t n = write(in_pipe[1], job.content.data() + total,
-                              job.content.size() - total);
-            if (n < 0) {
-                if (errno == EINTR) continue;
-                break;
-            }
-            total += (size_t)n;
-        }
-        close(in_pipe[1]);
 
         int flags = fcntl(out_pipe[0], F_GETFL, 0);
         fcntl(out_pipe[0], F_SETFL, flags | O_NONBLOCK);

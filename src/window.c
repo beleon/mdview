@@ -14,6 +14,7 @@
 #include <sys/timerfd.h>
 #include <math.h>
 #include <poll.h>
+#include <errno.h>
 #include <time.h>
 #include <linux/input-event-codes.h>
 
@@ -624,7 +625,7 @@ void mdv_window_run(mdv_window *w){
             nfds++;
         }
         int ret=poll(fds,nfds,w->tick_enabled?TICK_MS:-1);
-        if(ret<0)break;
+        if(ret<0){if(errno==EINTR)continue;break;}
         if(fds[0].revents&POLLIN){if(wl_display_dispatch(w->display)<0)break;}
         else wl_display_dispatch_pending(w->display);
         if(w->tick_enabled){

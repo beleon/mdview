@@ -9,6 +9,7 @@
 #include <cmath>
 #include <vector>
 
+#include <signal.h>
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 #include <linux/input-event-codes.h>
@@ -115,10 +116,13 @@ static std::string add_heading_ids(const std::string &html) {
     std::map<std::string, int> seen;
     size_t pos = 0;
     while (pos < html.size()) {
-        if (pos + 3 < html.size() &&
-            html[pos] == '<' && html[pos+1] == 'h' &&
-            html[pos+2] >= '1' && html[pos+2] <= '6' &&
-            (html[pos+3] == '>' || html[pos+3] == ' ')) {
+        char c3 = (pos + 3 < html.size()) ? html[pos+3] : '\0';
+        bool is_hN_open = pos + 3 < html.size()
+                       && html[pos] == '<' && html[pos+1] == 'h'
+                       && html[pos+2] >= '1' && html[pos+2] <= '6'
+                       && (c3 == '>' || c3 == ' ' || c3 == '\t'
+                        || c3 == '\n' || c3 == '\r');
+        if (is_hN_open) {
             char level = html[pos+2];
             char close = '>';
             size_t open_end = html.find(close, pos);
@@ -259,9 +263,13 @@ static std::vector<App::TocEntry> extract_toc(const std::string &html) {
     std::vector<App::TocEntry> r;
     size_t pos = 0;
     while (pos < html.size()) {
-        if (pos + 3 < html.size() && html[pos] == '<' && html[pos+1] == 'h'
-            && html[pos+2] >= '1' && html[pos+2] <= '3'
-            && (html[pos+3] == '>' || html[pos+3] == ' ')) {
+        char c3 = (pos + 3 < html.size()) ? html[pos+3] : '\0';
+        bool is_hN_open = pos + 3 < html.size()
+                       && html[pos] == '<' && html[pos+1] == 'h'
+                       && html[pos+2] >= '1' && html[pos+2] <= '3'
+                       && (c3 == '>' || c3 == ' ' || c3 == '\t'
+                        || c3 == '\n' || c3 == '\r');
+        if (is_hN_open) {
             int level = html[pos+2] - '0';
             size_t open_end = html.find('>', pos);
             if (open_end == std::string::npos) break;
@@ -405,6 +413,32 @@ static void open_search(App *a, mdv_window *w) {
     mdv_window_request_redraw(w);
 }
 
+/* Re-run find_matches against the most recently rendered spans if anything
+   has invalidated the result since the last render (search query change,
+   layout change, etc). Called from on_redraw (so the rendered overlay is
+   correct) AND from navigate_match (so a query keystroke immediately
+   followed by Enter — both in the same event-loop dispatch — sees fresh
+   matches rather than the previous render's stale list). */
+static void refresh_search_matches(App *a, mdv_window *w) {
+    if (!a->match_count_dirty) return;
+    if (!a->search_active || a->search_query.empty()) {
+        a->search_matches.clear();
+        a->current_match = -1;
+        a->match_count_dirty = false;
+        return;
+    }
+    int prev_cm = a->current_match;
+    a->search_matches = a->con.find_matches(a->search_query, a->case_sensitive,
+                                             a->whole_word, a->regex_mode);
+    if (a->search_matches.empty()) {
+        a->current_match = -1;
+    } else if (prev_cm < 0 || prev_cm >= (int)a->search_matches.size()) {
+        a->current_match = 0;
+        if (ensure_match_visible(a) && w) mdv_window_request_redraw(w);
+    }
+    a->match_count_dirty = false;
+}
+
 /* Chrome colors: same shape, different palette per theme. */
 struct Chrome {
     double bg[3];
@@ -546,20 +580,22 @@ static void draw_status_bar(App *a, cairo_t *cr, int ww, int hh) {
     cairo_move_to(cr, 10, top + (STATUS_H - th_l) / 2.0);
     pango_cairo_show_layout(cr, l);
 
-    /* Right: scroll % · zoom % (+ highlight indicator while jobs are running) */
-    int max_y = std::max(1, (int)(a->doc_h * a->zoom) - a->vp_h);
-    int scroll_pct = (a->doc_h > 0 && a->doc_h * a->zoom > a->vp_h)
-                     ? (int)((a->scroll_y / max_y) * 100.0 + 0.5)
-                     : 100;
-    if (scroll_pct < 0)   scroll_pct = 0;
-    if (scroll_pct > 100) scroll_pct = 100;
+    /* Right: scroll % · zoom % (+ highlight indicator while jobs are running).
+       Scroll % is only meaningful when the doc actually overflows the
+       viewport — when it fits, showing "100%" is misleading, so we omit it. */
     int zoom_pct = (int)(a->zoom * 100.0 + 0.5);
 
     std::string right;
     if (a->highlighter.active() && !a->highlighter.all_done())
         right = "highlighting… · ";
-    right += std::to_string(scroll_pct) + "%  · ";
-    right += std::to_string(zoom_pct)   + "%";
+    if (a->doc_h > 0 && (int)(a->doc_h * a->zoom) > a->vp_h) {
+        int max_y = (int)(a->doc_h * a->zoom) - a->vp_h;
+        int scroll_pct = (int)((a->scroll_y / (double)max_y) * 100.0 + 0.5);
+        if (scroll_pct < 0)   scroll_pct = 0;
+        if (scroll_pct > 100) scroll_pct = 100;
+        right += std::to_string(scroll_pct) + "%  · ";
+    }
+    right += std::to_string(zoom_pct) + "%";
     pango_layout_set_text(l, right.c_str(), -1);
     int rw = 0, rh = 0;
     pango_layout_get_pixel_size(l, &rw, &rh);
@@ -644,14 +680,21 @@ static void draw_help_overlay(App *a, cairo_t *cr, int ww, int hh) {
 }
 
 /* Walk the litehtml tree looking for an element whose id="..." attribute
-   matches. Returns null if not found. */
-static litehtml::element::ptr find_by_id(litehtml::element::ptr el, const std::string &id) {
-    if (!el) return nullptr;
-    const char *cur = el->get_attr("id");
-    if (cur && id == cur) return el;
-    for (const auto &child : el->children()) {
-        auto found = find_by_id(child, id);
-        if (found) return found;
+   matches. Returns null if not found. Iterative DFS — adversarial input
+   can't blow the stack. */
+static litehtml::element::ptr find_by_id(litehtml::element::ptr root, const std::string &id) {
+    if (!root) return nullptr;
+    std::vector<litehtml::element::ptr> stack;
+    stack.push_back(root);
+    while (!stack.empty()) {
+        auto el = stack.back();
+        stack.pop_back();
+        if (!el) continue;
+        const char *cur = el->get_attr("id");
+        if (cur && id == cur) return el;
+        const auto &kids = el->children();
+        /* Push in reverse so siblings are popped left-to-right. */
+        for (auto it = kids.rbegin(); it != kids.rend(); ++it) stack.push_back(*it);
     }
     return nullptr;
 }
@@ -661,6 +704,7 @@ static void scroll_to_anchor(App *a, const std::string &id) {
     auto el = find_by_id(a->doc->root(), id);
     if (!el) return;
     litehtml::position p = el->get_placement();
+    a->scroll_x = 0;
     a->scroll_y = (double)p.y * a->zoom;
     clamp(a);
 }
@@ -668,21 +712,27 @@ static void scroll_to_anchor(App *a, const std::string &id) {
 /* Walk the litehtml tree looking for an <a> whose placement contains
    (doc_x, doc_y). For inline anchors, the placement only covers their
    primary line box — accuracy is limited but adequate for "is the right
-   click on a link?" detection. Returns the href or empty string. */
-static std::string href_at(litehtml::element::ptr el, int doc_x, int doc_y) {
-    if (!el) return "";
-    const char *tag = el->get_tagName();
-    if (tag && (tag[0] == 'a' || tag[0] == 'A') && tag[1] == '\0') {
-        litehtml::position p = el->get_placement();
-        if (doc_x >= p.x && doc_x < p.x + p.width &&
-            doc_y >= p.y && doc_y < p.y + p.height) {
-            const char *href = el->get_attr("href");
-            if (href) return href;
+   click on a link?" detection. Returns the href or empty string.
+   Iterative DFS — adversarial input can't blow the stack. */
+static std::string href_at(litehtml::element::ptr root, int doc_x, int doc_y) {
+    if (!root) return "";
+    std::vector<litehtml::element::ptr> stack;
+    stack.push_back(root);
+    while (!stack.empty()) {
+        auto el = stack.back();
+        stack.pop_back();
+        if (!el) continue;
+        const char *tag = el->get_tagName();
+        if (tag && (tag[0] == 'a' || tag[0] == 'A') && tag[1] == '\0') {
+            litehtml::position p = el->get_placement();
+            if (doc_x >= p.x && doc_x < p.x + p.width &&
+                doc_y >= p.y && doc_y < p.y + p.height) {
+                const char *href = el->get_attr("href");
+                if (href) return href;
+            }
         }
-    }
-    for (const auto &c : el->children()) {
-        std::string r = href_at(c, doc_x, doc_y);
-        if (!r.empty()) return r;
+        const auto &kids = el->children();
+        for (auto it = kids.rbegin(); it != kids.rend(); ++it) stack.push_back(*it);
     }
     return "";
 }
@@ -953,17 +1003,7 @@ static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
     a->con.set_render_cr(nullptr);
 
     /* Re-find matches against freshly-recorded spans if layout changed since last search */
-    if (a->search_active && !a->search_query.empty() && a->match_count_dirty) {
-        int prev_cm = a->current_match;
-        a->search_matches = a->con.find_matches(a->search_query, a->case_sensitive, a->whole_word, a->regex_mode);
-        if (a->search_matches.empty()) {
-            a->current_match = -1;
-        } else if (prev_cm < 0 || prev_cm >= (int)a->search_matches.size()) {
-            a->current_match = 0;
-            if (ensure_match_visible(a)) mdv_window_request_redraw(w);
-        }
-        a->match_count_dirty = false;
-    }
+    refresh_search_matches(a, w);
 
     a->con.draw_search_matches(cr, a->search_matches, a->current_match);
     a->con.draw_selection_overlay(cr);
@@ -1264,6 +1304,7 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
             }
         }
     }
+    if (btn != BTN_LEFT) return;  /* litehtml only models left-button events */
     if (!a->doc) return;
     int dx = (int)((x_eff + a->scroll_x) / a->zoom), dy = (int)((y + a->scroll_y) / a->zoom);
     std::vector<litehtml::position> rb;
@@ -1336,6 +1377,7 @@ static void delete_word_back(std::string &s) {
 }
 
 static void navigate_match(App *a, mdv_window *w, bool backward) {
+    refresh_search_matches(a, w);
     if (a->search_matches.empty()) return;
     int n = (int)a->search_matches.size();
     if (a->current_match < 0) a->current_match = backward ? n - 1 : 0;
@@ -1591,6 +1633,12 @@ int main(int argc, char **argv) {
         }
     }
     if (!file) { print_usage(argv[0]); return 1; }
+
+    /* Highlighter children may exit before we finish writing to their stdin
+       (now backed by a tempfile, so deadlock-free) or read from their stdout.
+       Ignore SIGPIPE process-wide so a stray write returns EPIPE rather
+       than killing us. */
+    signal(SIGPIPE, SIG_IGN);
 
     std::ifstream f(file);
     if (!f.is_open()) { fprintf(stderr, "Error: cannot open '%s'\n", file); return 1; }
