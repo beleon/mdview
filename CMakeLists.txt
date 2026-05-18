@@ -124,6 +124,7 @@ add_executable(mdview
     ${PROTO_DIR}/pointer-gestures-protocol.h
     ${PROTO_DIR}/cursor-shape-protocol.c
     ${PROTO_DIR}/cursor-shape-protocol.h
+    ${PROTO_DIR}/cursor-shape-stub.c
 )
 
 target_include_directories(mdview PRIVATE
