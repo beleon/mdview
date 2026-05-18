@@ -1160,16 +1160,24 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
         mdv_window_request_redraw(w); return;
     }
 
-    /* Cursor: arrow over scrollbars/search bar/status bar; text by default
-       in the doc area. litehtml's set_cursor callback (registered in main)
-       may override this to "pointer" when hovering over an <a>, fired from
-       doc->on_mouse_over below. */
+    /* Cursor: arrow over scrollbars/search bar/status bar. In the doc area
+       use I-beam only over actual rendered text — blank margins, gaps
+       between paragraphs, and image areas get the default arrow.
+       litehtml's set_cursor callback (registered in main) overrides this
+       to "pointer" when hovering an <a>, fired from doc->on_mouse_over
+       below. */
     { SBG sv = sbv(a); SBG sh = sbh(a);
       bool over_sb = (sv.vis && x_eff >= a->vp_w - SB_W)
                   || (sh.vis && y >= a->vp_h - SB_W && y < a->vp_h);
       bool over_search_bar = a->search_active && y < SEARCH_BAR_H;
       bool over_status_bar = y >= a->vp_h;
-      mdv_window_set_cursor(w, (over_sb || over_search_bar || over_status_bar) ? "default" : "text"); }
+      if (over_sb || over_search_bar || over_status_bar) {
+          mdv_window_set_cursor(w, "default");
+      } else {
+          int dxd = (int)((x_eff + a->scroll_x) / a->zoom);
+          int dyd = (int)((y       + a->scroll_y) / a->zoom);
+          mdv_window_set_cursor(w, a->con.find_span_at(dxd, dyd) ? "text" : "default");
+      } }
 
     Selection &sel = a->con.selection();
     if (sel.dragging) {
@@ -1699,13 +1707,13 @@ int main(int argc, char **argv) {
         }
     });
 
-    /* Cursor from litehtml: the only one we care about is "pointer" (over
-       an <a>). Everything else falls back to the doc-area default already
-       set by on_mouse_move ("text"). */
+    /* Cursor from litehtml: the only one we act on is "pointer" (over an
+       <a>). For anything else we leave the cursor at whatever on_mouse_move
+       picked based on whether a text span is actually under the pointer
+       ("text" over rendered text, "default" over blank space). */
     app.con.set_cursor_cb([&app](const std::string &name) {
         if (!app.win) return;
         if (name == "pointer") mdv_window_set_cursor(app.win, "pointer");
-        else                   mdv_window_set_cursor(app.win, "text");
     });
 
     mdv_callbacks cb = {};
