@@ -483,6 +483,18 @@ static void kr(void *d,struct wl_keyboard *k,int32_t r,int32_t dl){
 }
 static const struct wl_keyboard_listener kbl={.keymap=kk,.enter=ke,.leave=kl,.key=ky,.modifiers=km,.repeat_info=kr};
 
+/* Create the cursor-shape device once both prerequisites exist. Called from
+   the seat-capabilities handler (after wl_pointer is created) AND from the
+   registry handler (in case the manager is advertised AFTER the seat caps
+   event has already fired). Idempotent — does nothing once the device is
+   already set. */
+static void try_get_cursor_shape_device(mdv_window *w) {
+    if (!w || w->cursor_shape_device) return;
+    if (!w->cursor_shape_manager || !w->pointer) return;
+    w->cursor_shape_device = wp_cursor_shape_manager_v1_get_pointer(
+        w->cursor_shape_manager, w->pointer);
+}
+
 /* Seat */
 static void sc(void *d,struct wl_seat *s,uint32_t c){
     mdv_window *w=d;
@@ -492,9 +504,7 @@ static void sc(void *d,struct wl_seat *s,uint32_t c){
             w->pinch_gesture=zwp_pointer_gestures_v1_get_pinch_gesture(w->pointer_gestures,w->pointer);
             zwp_pointer_gesture_pinch_v1_add_listener(w->pinch_gesture,&pinch_listener,w);
         }
-        if(w->cursor_shape_manager){
-            w->cursor_shape_device=wp_cursor_shape_manager_v1_get_pointer(w->cursor_shape_manager,w->pointer);
-        }
+        try_get_cursor_shape_device(w);
     }
     if((c&WL_SEAT_CAPABILITY_KEYBOARD)&&!w->keyboard){w->keyboard=wl_seat_get_keyboard(s);wl_keyboard_add_listener(w->keyboard,&kbl,w);}
 }
@@ -542,7 +552,10 @@ static void rg(void *d,struct wl_registry *r,uint32_t name,const char *iface,uin
     else if(!strcmp(iface,zxdg_decoration_manager_v1_interface.name))w->decoration_manager=wl_registry_bind(r,name,&zxdg_decoration_manager_v1_interface,1);
     else if(!strcmp(iface,wl_data_device_manager_interface.name))w->data_device_manager=wl_registry_bind(r,name,&wl_data_device_manager_interface,3);
     else if(!strcmp(iface,zwp_pointer_gestures_v1_interface.name))w->pointer_gestures=wl_registry_bind(r,name,&zwp_pointer_gestures_v1_interface,1);
-    else if(!strcmp(iface,wp_cursor_shape_manager_v1_interface.name))w->cursor_shape_manager=wl_registry_bind(r,name,&wp_cursor_shape_manager_v1_interface,1);
+    else if(!strcmp(iface,wp_cursor_shape_manager_v1_interface.name)){
+        w->cursor_shape_manager=wl_registry_bind(r,name,&wp_cursor_shape_manager_v1_interface,1);
+        try_get_cursor_shape_device(w);
+    }
 }
 static void rr(void *d,struct wl_registry *r,uint32_t n){(void)d;(void)r;(void)n;}
 static const struct wl_registry_listener rl={.global=rg,.global_remove=rr};
@@ -647,6 +660,12 @@ mdv_window *mdv_window_create(const char *title,int width,int height,const mdv_c
     wl_surface_commit(w->surface);wl_display_roundtrip(w->display);
     w->timerfd=timerfd_create(CLOCK_MONOTONIC,TFD_CLOEXEC|TFD_NONBLOCK);
     w->repeat_timerfd=timerfd_create(CLOCK_MONOTONIC,TFD_CLOEXEC|TFD_NONBLOCK);
+    if (getenv("MDVIEW_DEBUG")) {
+        fprintf(stderr, "mdview: cursor-shape-v1 manager=%s device=%s theme=%s\n",
+                w->cursor_shape_manager ? "bound" : "unavailable",
+                w->cursor_shape_device  ? "ready" : "(none)",
+                w->cursor_theme         ? "loaded (fallback)" : "(none)");
+    }
     return w;
 }
 void mdv_window_destroy(mdv_window *w){
