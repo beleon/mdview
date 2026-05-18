@@ -460,22 +460,19 @@ static void draw_sidebar(App *a, cairo_t *cr) {
     PangoFontDescription *fd = pango_font_description_from_string("Sans 11");
     pango_layout_set_font_description(l, fd);
 
-    /* Header label */
+    /* Measure the header text first so we know the band it occupies. */
     pango_layout_set_text(l, "Outline", -1);
     int th = 0, tw_px = 0;
     pango_layout_get_pixel_size(l, &tw_px, &th);
-    cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
-    cairo_move_to(cr, 14, 6);
-    pango_cairo_show_layout(cr, l);
-    cairo_set_source_rgb(cr, c.sep[0], c.sep[1], c.sep[2]);
-    cairo_rectangle(cr, 12, 6 + th + 4, w - 24, 1); cairo_fill(cr);
+    int header_h = 6 + th + 4 + 1;  /* top pad + text + bottom pad + separator px */
 
-    /* Entries */
-    int y0 = TOC_PAD_TOP - (int)a->toc_scroll_y + 24;  /* offset for header */
+    /* Entries first — anything that scrolls past the top will be masked by
+       the header drawn afterwards. */
+    int y0 = TOC_PAD_TOP - (int)a->toc_scroll_y + 24;
     for (size_t i = 0; i < a->toc_entries.size(); i++) {
         const auto &e = a->toc_entries[i];
         int y = y0 + (int)i * TOC_LINE_H;
-        if (y + TOC_LINE_H < 24) continue;
+        if (y + TOC_LINE_H < 0) continue;
         if (y > h) break;
 
         if ((int)i == a->toc_hover_idx) {
@@ -493,6 +490,18 @@ static void draw_sidebar(App *a, cairo_t *cr) {
         pango_cairo_show_layout(cr, l);
         pango_layout_set_width(l, -1);
     }
+
+    /* Header: solid bg masks any entries that scrolled into this band,
+       then the "Outline" label and a separator line below it. */
+    cairo_set_source_rgb(cr, c.bg[0], c.bg[1], c.bg[2]);
+    cairo_rectangle(cr, 0, 0, w, header_h); cairo_fill(cr);
+    pango_layout_set_text(l, "Outline", -1);
+    pango_layout_set_width(l, -1);
+    cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
+    cairo_move_to(cr, 14, 6);
+    pango_cairo_show_layout(cr, l);
+    cairo_set_source_rgb(cr, c.sep[0], c.sep[1], c.sep[2]);
+    cairo_rectangle(cr, 12, 6 + th + 4, w - 24, 1); cairo_fill(cr);
 
     pango_font_description_free(fd);
     g_object_unref(l);
