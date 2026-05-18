@@ -548,6 +548,8 @@ mdv_window *mdv_window_create(const char *title,int width,int height,const mdv_c
         w->cursor_surface=wl_compositor_create_surface(w->compositor);
         w->cursor_default=wl_cursor_theme_get_cursor(w->cursor_theme,"default");
         w->cursor_text=wl_cursor_theme_get_cursor(w->cursor_theme,"text");
+        if(!w->cursor_text)w->cursor_text=wl_cursor_theme_get_cursor(w->cursor_theme,"xterm");
+        if(!w->cursor_text)w->cursor_text=wl_cursor_theme_get_cursor(w->cursor_theme,"ibeam");
         w->cursor_pointer=wl_cursor_theme_get_cursor(w->cursor_theme,"pointer");
         if(!w->cursor_pointer)w->cursor_pointer=wl_cursor_theme_get_cursor(w->cursor_theme,"hand1");
         if(!w->cursor_pointer)w->cursor_pointer=wl_cursor_theme_get_cursor(w->cursor_theme,"hand2");
