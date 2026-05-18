@@ -478,7 +478,10 @@ public:
     }
     void set_anchor_click_cb(std::function<void(const std::string&)> cb){anchor_click_cb_=std::move(cb);}
     void on_mouse_event(const litehtml::element::ptr&,litehtml::mouse_event)override{}
-    void set_cursor(const char*)override{}
+    void set_cursor(const char *name) override {
+        if (cursor_cb_) cursor_cb_(name ? std::string(name) : std::string());
+    }
+    void set_cursor_cb(std::function<void(const std::string&)> cb){cursor_cb_=std::move(cb);}
     void import_css(litehtml::string&,const litehtml::string&,litehtml::string&)override{}
     void transform_text(litehtml::string&text,litehtml::text_transform tt)override{
         if(tt==litehtml::text_transform_uppercase)for(auto&c:text)c=(char)toupper((unsigned char)c);
@@ -515,5 +518,6 @@ private:
     std::vector<TextSpan>spans_;Selection sel_;
     std::map<std::string,CachedImage*>imgs_;
     std::function<void(const std::string&)> anchor_click_cb_;
+    std::function<void(const std::string&)> cursor_cb_;
     bool dark_mode_=false;
 };

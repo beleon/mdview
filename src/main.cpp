@@ -1111,22 +1111,16 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
         mdv_window_request_redraw(w); return;
     }
 
-    /* Cursor: arrow over scrollbars/search bar/status bar, pointer over a
-       link, text everywhere else in the doc. */
+    /* Cursor: arrow over scrollbars/search bar/status bar; text by default
+       in the doc area. litehtml's set_cursor callback (registered in main)
+       may override this to "pointer" when hovering over an <a>, fired from
+       doc->on_mouse_over below. */
     { SBG sv = sbv(a); SBG sh = sbh(a);
       bool over_sb = (sv.vis && x_eff >= a->vp_w - SB_W)
                   || (sh.vis && y >= a->vp_h - SB_W && y < a->vp_h);
       bool over_search_bar = a->search_active && y < SEARCH_BAR_H;
       bool over_status_bar = y >= a->vp_h;
-      const char *cur = "text";
-      if (over_sb || over_search_bar || over_status_bar) {
-          cur = "default";
-      } else if (a->doc) {
-          int dx2 = (int)((x_eff + a->scroll_x) / a->zoom);
-          int dy2 = (int)((y       + a->scroll_y) / a->zoom);
-          if (!href_at(a->doc->root(), dx2, dy2).empty()) cur = "pointer";
-      }
-      mdv_window_set_cursor(w, cur); }
+      mdv_window_set_cursor(w, (over_sb || over_search_bar || over_status_bar) ? "default" : "text"); }
 
     Selection &sel = a->con.selection();
     if (sel.dragging) {
@@ -1646,6 +1640,15 @@ int main(int argc, char **argv) {
         } else {
             open_external_url(url);
         }
+    });
+
+    /* Cursor from litehtml: the only one we care about is "pointer" (over
+       an <a>). Everything else falls back to the doc-area default already
+       set by on_mouse_move ("text"). */
+    app.con.set_cursor_cb([&app](const std::string &name) {
+        if (!app.win) return;
+        if (name == "pointer") mdv_window_set_cursor(app.win, "pointer");
+        else                   mdv_window_set_cursor(app.win, "text");
     });
 
     mdv_callbacks cb = {};
