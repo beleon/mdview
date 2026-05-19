@@ -17,6 +17,7 @@
 #include "litehtml.h"
 #include "cairo_container.h"
 #include "highlight.h"
+#include "install.h"
 #include "state.h"
 #include "livereload.h"
 extern "C" {
@@ -1632,6 +1633,8 @@ static void print_usage(const char *prog) {
         "  --no-highlight   disable syntax highlighting of code blocks\n"
         "  --no-reload      disable live-reload on file change\n"
         "  -f, --foreground stay attached to the terminal (default: detach)\n"
+        "  --install        install mdview into ~/.local (binary + icons + .desktop)\n"
+        "  --uninstall      undo --install\n"
         "  -h, --help       show this help\n"
         "\n"
         "Env: MDVIEW_NO_HIGHLIGHT also disables highlighting.\n",
@@ -1639,6 +1642,13 @@ static void print_usage(const char *prog) {
 }
 
 int main(int argc, char **argv) {
+    /* --install / --uninstall are short-circuit subcommands: handle before
+       any other arg parsing so they don't trigger "file required". */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--install")   == 0) return mdv::do_install();
+        if (strcmp(argv[i], "--uninstall") == 0) return mdv::do_uninstall();
+    }
+
     bool no_highlight = false;
     bool no_reload    = false;
     bool foreground   = false;

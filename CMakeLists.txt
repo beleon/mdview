@@ -129,6 +129,7 @@ target_include_directories(md4c PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty)
 add_executable(mdview
     src/main.cpp
     src/window.c
+    src/icons_data.c
     ${PROTO_DIR}/xdg-shell-protocol.c
     ${PROTO_DIR}/xdg-shell-protocol.h
     ${PROTO_DIR}/xdg-decoration-protocol.c
