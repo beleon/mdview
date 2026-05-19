@@ -4,6 +4,8 @@
 #include "xdg-decoration-protocol.h"
 #include "pointer-gestures-protocol.h"
 #include "cursor-shape-protocol.h"
+#include "xdg-toplevel-icon-protocol.h"
+#include "icons_data.h"
 
 #include <pango/pangocairo.h>
 #include <wayland-cursor.h>
@@ -81,6 +83,13 @@ struct mdv_window {
     struct wl_cursor_theme *cursor_theme; struct wl_surface *cursor_surface;
     struct wl_cursor *cursor_table[MDV_CURSOR_COUNT];
     mdv_cursor_kind cursor_current;
+    /* Toplevel icon (xdg-toplevel-icon-v1). PNG bytes are baked into the
+       binary via icons_data.h; on bind we decode each via cairo, copy
+       into wl_shm, and attach. Track the backing storage so we can free
+       it at destroy. */
+    struct xdg_toplevel_icon_manager_v1 *icon_manager;
+    struct { struct wl_buffer *wl_buf; void *data; size_t size; int fd; } icon_bufs[8];
+    int n_icon_bufs;
     /* Pinch gesture */
     struct zwp_pointer_gestures_v1 *pointer_gestures;
     struct zwp_pointer_gesture_pinch_v1 *pinch_gesture;
@@ -483,6 +492,88 @@ static void kr(void *d,struct wl_keyboard *k,int32_t r,int32_t dl){
 }
 static const struct wl_keyboard_listener kbl={.keymap=kk,.enter=ke,.leave=kl,.key=ky,.modifiers=km,.repeat_info=kr};
 
+/* ── Toplevel icon (xdg-toplevel-icon-v1) ──────────────────────────── */
+
+/* cairo PNG-stream reader that walks an in-memory byte array. */
+struct png_mem { const unsigned char *p; size_t left; };
+static cairo_status_t png_read_mem(void *closure, unsigned char *out, unsigned int len) {
+    struct png_mem *m = closure;
+    if (m->left < len) return CAIRO_STATUS_READ_ERROR;
+    memcpy(out, m->p, len);
+    m->p += len; m->left -= len;
+    return CAIRO_STATUS_SUCCESS;
+}
+
+/* Decode one embedded PNG into a square wl_shm ARGB8888 buffer. Returns
+   the resulting wl_buffer and stashes the backing storage so we can free
+   it at window destroy. Returns NULL on any failure (oversized, decode
+   error, non-square, mmap failure) — the caller just skips this size. */
+static struct wl_buffer *make_icon_buffer(mdv_window *w, const unsigned char *png_data, size_t png_len) {
+    if (w->n_icon_bufs >= (int)(sizeof(w->icon_bufs)/sizeof(w->icon_bufs[0]))) return NULL;
+
+    struct png_mem mem = { png_data, png_len };
+    cairo_surface_t *surf = cairo_image_surface_create_from_png_stream(png_read_mem, &mem);
+    if (cairo_surface_status(surf) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(surf);
+        return NULL;
+    }
+    int iw = cairo_image_surface_get_width(surf);
+    int ih = cairo_image_surface_get_height(surf);
+    int stride = cairo_image_surface_get_stride(surf);
+    if (iw != ih || iw <= 0) { cairo_surface_destroy(surf); return NULL; }
+
+    size_t buf_size = (size_t)iw * ih * 4;
+    int fd = memfd_create("mdv-icon", MFD_CLOEXEC);
+    if (fd < 0 || ftruncate(fd, (off_t)buf_size) < 0) {
+        if (fd >= 0) close(fd);
+        cairo_surface_destroy(surf);
+        return NULL;
+    }
+    void *data = mmap(NULL, buf_size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    if (data == MAP_FAILED) {
+        close(fd); cairo_surface_destroy(surf); return NULL;
+    }
+
+    /* Cairo's ARGB32 = WL_SHM_FORMAT_ARGB8888 byte layout on LE hosts.
+       Copy row by row to handle cairo's possibly-padded stride. */
+    cairo_surface_flush(surf);
+    unsigned char *src = cairo_image_surface_get_data(surf);
+    for (int y = 0; y < ih; y++) {
+        memcpy((char*)data + (size_t)y*iw*4, src + (size_t)y*stride, (size_t)iw*4);
+    }
+    cairo_surface_destroy(surf);
+
+    struct wl_shm_pool *pool = wl_shm_create_pool(w->shm, fd, (int32_t)buf_size);
+    struct wl_buffer *wb = wl_shm_pool_create_buffer(pool, 0, iw, ih, iw*4, WL_SHM_FORMAT_ARGB8888);
+    wl_shm_pool_destroy(pool);
+
+    int idx = w->n_icon_bufs++;
+    w->icon_bufs[idx].wl_buf = wb;
+    w->icon_bufs[idx].data   = data;
+    w->icon_bufs[idx].size   = buf_size;
+    w->icon_bufs[idx].fd     = fd;
+    return wb;
+}
+
+/* Attach all baked-in icons to our toplevel via xdg-toplevel-icon-v1.
+   No-op (with no protocol error) when the compositor doesn't expose
+   the manager — KDE/Hyprland/Sway do; Mutter < 47 does not. */
+static void setup_toplevel_icon(mdv_window *w) {
+    if (!w->icon_manager || !w->xdg_toplevel || !w->shm) return;
+    struct xdg_toplevel_icon_v1 *icon =
+        xdg_toplevel_icon_manager_v1_create_icon(w->icon_manager);
+    if (!icon) return;
+    int attached = 0;
+    for (int i = 0; i < MDV_ICONS_N; i++) {
+        struct wl_buffer *wb = make_icon_buffer(w, MDV_ICONS[i].data, MDV_ICONS[i].len);
+        if (wb) { xdg_toplevel_icon_v1_add_buffer(icon, wb, 1); attached++; }
+    }
+    if (attached > 0) {
+        xdg_toplevel_icon_manager_v1_set_icon(w->icon_manager, w->xdg_toplevel, icon);
+    }
+    xdg_toplevel_icon_v1_destroy(icon);  /* compositor keeps its own ref */
+}
+
 /* Create the cursor-shape device once both prerequisites exist. Called from
    the seat-capabilities handler (after wl_pointer is created) AND from the
    registry handler (in case the manager is advertised AFTER the seat caps
@@ -556,6 +647,9 @@ static void rg(void *d,struct wl_registry *r,uint32_t name,const char *iface,uin
         w->cursor_shape_manager=wl_registry_bind(r,name,&wp_cursor_shape_manager_v1_interface,1);
         try_get_cursor_shape_device(w);
     }
+    else if(!strcmp(iface,xdg_toplevel_icon_manager_v1_interface.name)){
+        w->icon_manager=wl_registry_bind(r,name,&xdg_toplevel_icon_manager_v1_interface,1);
+    }
 }
 static void rr(void *d,struct wl_registry *r,uint32_t n){(void)d;(void)r;(void)n;}
 static const struct wl_registry_listener rl={.global=rg,.global_remove=rr};
@@ -617,6 +711,7 @@ mdv_window *mdv_window_create(const char *title,int width,int height,const mdv_c
     w->xdg_toplevel=xdg_surface_get_toplevel(w->xdg_surface);
     xdg_toplevel_add_listener(w->xdg_toplevel,&xtl,w);
     xdg_toplevel_set_title(w->xdg_toplevel,w->title);xdg_toplevel_set_app_id(w->xdg_toplevel,"mdview");
+    setup_toplevel_icon(w);
     if(w->decoration_manager){
         w->toplevel_decoration=zxdg_decoration_manager_v1_get_toplevel_decoration(w->decoration_manager,w->xdg_toplevel);
         zxdg_toplevel_decoration_v1_add_listener(w->toplevel_decoration,&dl,w);
@@ -667,6 +762,9 @@ mdv_window *mdv_window_create(const char *title,int width,int height,const mdv_c
                 w->cursor_shape_device  ? "ready" : "(none)",
                 w->cursor_theme         ? "loaded (fallback)" : "(none)",
                 (xc && *xc) ? xc : "(unset)");
+        fprintf(stderr, "mdview: xdg-toplevel-icon-v1 manager=%s icons_attached=%d\n",
+                w->icon_manager ? "bound" : "unavailable",
+                w->n_icon_bufs);
     }
     return w;
 }
@@ -694,6 +792,15 @@ void mdv_window_destroy(mdv_window *w){
     if(w->keyboard)wl_keyboard_destroy(w->keyboard);
     if(w->xdg_toplevel)xdg_toplevel_destroy(w->xdg_toplevel);
     if(w->xdg_surface)xdg_surface_destroy(w->xdg_surface);
+    /* Free icon buffers AFTER the toplevel is gone — the compositor was
+       holding the icon (and therefore the buffers) until then. */
+    for (int i = 0; i < w->n_icon_bufs; i++) {
+        if (w->icon_bufs[i].wl_buf) wl_buffer_destroy(w->icon_bufs[i].wl_buf);
+        if (w->icon_bufs[i].data && w->icon_bufs[i].data != MAP_FAILED)
+            munmap(w->icon_bufs[i].data, w->icon_bufs[i].size);
+        if (w->icon_bufs[i].fd >= 0) close(w->icon_bufs[i].fd);
+    }
+    if (w->icon_manager) xdg_toplevel_icon_manager_v1_destroy(w->icon_manager);
     if(w->surface)wl_surface_destroy(w->surface);
     if(w->decoration_manager)zxdg_decoration_manager_v1_destroy(w->decoration_manager);
     if(w->xdg_wm_base)xdg_wm_base_destroy(w->xdg_wm_base);
