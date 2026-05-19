@@ -117,7 +117,17 @@ class CairoContainer : public litehtml::document_container {
 public:
     CairoContainer() {
         ss_=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1,1);
-        sc_=cairo_create(ss_); pl_=pango_cairo_create_layout(sc_);
+        sc_=cairo_create(ss_);
+        /* Disable hint_metrics so glyph widths stay at fractional precision.
+           With hinting on, widths snap to whole pixels — fine at zoom=1.0
+           but every fractional zoom step then has to redistribute the
+           rounding error across the line, which makes monospace columns
+           wobble (and occasionally overlap) under pinch zoom. */
+        cairo_font_options_t *fo = cairo_font_options_create();
+        cairo_font_options_set_hint_metrics(fo, CAIRO_HINT_METRICS_OFF);
+        cairo_set_font_options(sc_, fo);
+        cairo_font_options_destroy(fo);
+        pl_=pango_cairo_create_layout(sc_);
     }
     ~CairoContainer() { g_object_unref(pl_); cairo_destroy(sc_); cairo_surface_destroy(ss_);
         for(auto &p:imgs_) delete p.second; }
@@ -407,6 +417,12 @@ public:
         spans_.push_back({(int)pos.x+sx_,(int)pos.y+sy_,(int)pos.width,(int)pos.height,std::string(text),f->desc});
         set_color(cr,color);
         PangoLayout*layout=pango_cairo_create_layout(cr);
+        /* Match the measurement layout: no metric hinting → glyph widths
+           stay fractional under cairo_scale (no monospace wobble). */
+        cairo_font_options_t *fo = cairo_font_options_create();
+        cairo_font_options_set_hint_metrics(fo, CAIRO_HINT_METRICS_OFF);
+        pango_cairo_context_set_font_options(pango_layout_get_context(layout), fo);
+        cairo_font_options_destroy(fo);
         pango_layout_set_font_description(layout,f->desc);pango_layout_set_text(layout,text,-1);
         if(f->underline||f->strikethrough){PangoAttrList*a=pango_attr_list_new();
             if(f->underline)pango_attr_list_insert(a,pango_attr_underline_new(PANGO_UNDERLINE_SINGLE));
