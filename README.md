@@ -124,6 +124,27 @@ Produces `dist/mdview`. The binary is self-contained — `dist/mdview --install`
 - **Right-click** — context menu (Open Link / Copy / Select All / Find / Reload / Toggle Dark)
 - **Title bar drag** — move window (CSD mode)
 
+## Configuration
+
+mdview keeps two files under `~/.config/mdview/`:
+
+- **`state`** — machine-managed. Per-file scroll / zoom / text-size LRU
+  (hashed paths, last 20 files), last window size, dark mode, search
+  flags. Rewritten on every close — don't edit by hand.
+- **`config`** — user-editable. Defaults for newly-opened files only;
+  the LRU always wins for files you've already adjusted. Optional —
+  if missing, built-in defaults apply.
+
+Recognised `config` keys:
+
+```ini
+# ~/.config/mdview/config
+font_size = 16    # body font-size in px (8..48)
+zoom      = 1.0   # pinch-zoom level, 1.0 = 100% (1.0..5.0)
+```
+
+`#` comments and whitespace around `=` are tolerated.
+
 ## Window Decorations
 
 mdview negotiates server-side decorations via the `xdg-decoration-unstable-v1` protocol. Compositors that support it (KDE Plasma, Sway, Hyprland, etc.) will draw their own title bar. If the compositor doesn't support the protocol or requests client-side decorations (e.g. GNOME/Mutter), mdview draws a minimal dark title bar with a close button.

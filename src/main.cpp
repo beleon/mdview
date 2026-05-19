@@ -16,6 +16,7 @@
 
 #include "litehtml.h"
 #include "cairo_container.h"
+#include "config.h"
 #include "highlight.h"
 #include "install.h"
 #include "state.h"
@@ -1769,7 +1770,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    mdv::State persisted = mdv::load_state();
+    mdv::State  persisted = mdv::load_state();
+    mdv::Config config    = mdv::load_config();
 
     /* Hash the canonical (realpath) path for the scroll-position LRU lookup.
        Falling back to the literal `file` string if realpath fails just
@@ -1782,19 +1784,21 @@ int main(int argc, char **argv) {
     app.file_path = file;
     { auto sl = app.file_path.find_last_of('/');
       app.file_basename = (sl == std::string::npos) ? app.file_path : app.file_path.substr(sl + 1); }
-    /* Restore scroll + zoom + font-size if this file is in the LRU;
-       otherwise the App-struct defaults stand. */
-    double initial_zoom = 1.0;
+    /* Defaults for a file we've never seen come from the user's config;
+       per-file LRU overrides if present. */
+    double initial_zoom = config.zoom;
+    app.font_size       = config.font_size;
     for (const auto &kv : persisted.files) {
         if (kv.first == path_hash) {
             app.scroll_x  = kv.second.scroll_x;
             app.scroll_y  = kv.second.scroll_y;
             initial_zoom  = kv.second.zoom;
-            app.font_size = std::clamp(kv.second.font_size, FONT_SIZE_MIN, FONT_SIZE_MAX);
+            app.font_size = kv.second.font_size;
             break;
         }
     }
-    app.zoom            = std::clamp(initial_zoom, ZOOM_MIN, ZOOM_MAX);
+    app.zoom      = std::clamp(initial_zoom, ZOOM_MIN, ZOOM_MAX);
+    app.font_size = std::clamp(app.font_size, FONT_SIZE_MIN, FONT_SIZE_MAX);
     app.dark_mode       = persisted.dark_mode;
     app.case_sensitive  = persisted.case_sensitive;
     app.whole_word      = persisted.whole_word;
