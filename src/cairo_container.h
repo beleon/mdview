@@ -162,18 +162,26 @@ public:
 
 public:
     /* Snap an arbitrary doc-y to the center of the nearest recorded line.
-       Used to enforce that selection endpoints always live on some line:
-       sy and ey are routed through this before any span membership check,
-       so there's no in-between / gap-edge state where the selection could
-       go empty. If the cursor is inside a line's y-range we use that line;
-       otherwise we pick the line whose top-or-bottom is closest. */
+       Used to enforce that selection endpoints always live on some line.
+
+       Each line owns its actual y-range PLUS a small STICKY_MARGIN beyond
+       its bottom edge. With spans_ iterated in document order (top-to-
+       bottom), this means a few pixels of vertical wobble past a line's
+       bottom still snap to THAT line rather than instantly switching to
+       the next — small drag-y jitter doesn't reshape the selection.
+       Beyond the sticky zone, the cursor really has moved to the next
+       line and the snap switches. */
     int snap_y_to_line(int y) const {
         if (spans_.empty()) return y;
+        constexpr int STICKY_MARGIN = 8;
+        for (const TextSpan &sp : spans_) {
+            int top = sp.y, bot = sp.y + sp.height;
+            if (y >= top && y < bot + STICKY_MARGIN) return sp.y + sp.height / 2;
+        }
         int best_cy = y;
         int best_dist = std::numeric_limits<int>::max();
         for (const TextSpan &sp : spans_) {
             int top = sp.y, bot = sp.y + sp.height;
-            if (y >= top && y < bot) return sp.y + sp.height / 2;
             int dist = (y < top) ? (top - y) : (y - bot + 1);
             if (dist < best_dist) {
                 best_dist = dist;
@@ -181,6 +189,28 @@ public:
             }
         }
         return best_cy;
+    }
+
+    /* Left/right pixel bounds of the line whose y-center is `lcy`,
+       computed from ALL spans on that line (not just the selected
+       subset). Used to clamp the selection rectangle so it doesn't
+       extend into the line's margins. */
+    int line_bounds_left(int lcy) const {
+        int best = std::numeric_limits<int>::max();
+        for (const TextSpan &sp : spans_) {
+            int cy = sp.y + sp.height / 2;
+            if (std::abs(cy - lcy) <= 4 && sp.x < best) best = sp.x;
+        }
+        return best;
+    }
+    int line_bounds_right(int lcy) const {
+        int best = std::numeric_limits<int>::min();
+        for (const TextSpan &sp : spans_) {
+            int cy = sp.y + sp.height / 2;
+            int r  = sp.x + sp.width;
+            if (std::abs(cy - lcy) <= 4 && r > best) best = r;
+        }
+        return best;
     }
     /* Like sel_.get_ordered but with sy/ey snapped to the closest line. */
     void selection_bounds(int &sx, int &sy, int &ex, int &ey) const {
@@ -200,13 +230,16 @@ public:
             while(i<n&&std::abs((s[i]->y+s[i]->height/2)-ly)<=4){lg.min_top=std::min(lg.min_top,s[i]->y);lg.max_bot=std::max(lg.max_bot,s[i]->y+s[i]->height);i++;}
             lg.end=i;lines.push_back(lg);}return lines;}
     /* When rx falls inside a span, snap to the character boundary there.
-       When rx falls in an inter-span gap (e.g. between two words) or in
-       the margin BEFORE the line's first selected span, return rx itself
-       so the highlight rectangle starts visually at the click/cursor
-       position — not at the next word's left edge, which produced the
-       "selection start jumps to x=40" effect. Same idea mirrored for
-       clip_right. */
+       When rx is in an INTER-SPAN gap on the line, return rx so the
+       highlight starts at the click/cursor position rather than jumping
+       to the next word's edge. When rx is BEYOND the line's leftmost /
+       rightmost text (i.e. in the line's left or right margin), clamp
+       to the line's actual text bounds — extending the highlight into
+       empty margin looks weird. */
     int clip_left(const std::vector<const TextSpan*>&s,const LineGroup&lg,int rx)const{
+        int lcy   = s[lg.start]->y + s[lg.start]->height / 2;
+        int left  = line_bounds_left(lcy);
+        if (left != std::numeric_limits<int>::max() && rx < left) rx = left;
         for(int j=lg.start;j<lg.end;j++){
             if(rx>=s[j]->x&&rx<=s[j]->x+s[j]->width)return index_to_x(*s[j],x_to_index(*s[j],rx));
             if(rx<s[j]->x)return rx;
@@ -214,6 +247,9 @@ public:
         return s[lg.start]->x;
     }
     int clip_right(const std::vector<const TextSpan*>&s,const LineGroup&lg,int rx)const{
+        int lcy   = s[lg.start]->y + s[lg.start]->height / 2;
+        int right = line_bounds_right(lcy);
+        if (right != std::numeric_limits<int>::min() && rx > right) rx = right;
         for(int j=lg.end-1;j>=lg.start;j--){
             if(rx>=s[j]->x&&rx<=s[j]->x+s[j]->width)return index_to_x(*s[j],x_to_index(*s[j],rx));
             if(rx>s[j]->x+s[j]->width)return rx;
