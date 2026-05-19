@@ -360,11 +360,14 @@ public:
         if(dark_mode_)cairo_set_source_rgba(cr,0.35,0.55,1.0,0.35);
         else          cairo_set_source_rgba(cr,0.20,0.50,0.90,0.30);
         for(int li=0;li<(int)lines.size();li++){auto&lg=lines[li];int lcy=sel[lg.start]->y+sel[lg.start]->height/2;
-            /* Match span_in's midpoint-based threshold: a line is the anchor's
-               (or extent's) line if the cursor y is within half a line height
-               of its center — same definition as "partial" in span_in. */
+            /* Half-open match to span_in's on_anchor / on_extent: a line is
+               the anchor's (or extent's) line when the cursor y falls in
+               (lcy - t, lcy + t]. The exact boundary y belongs to the line
+               BELOW so we don't end up marking both adjacent lines as
+               "current". */
             int line_t=(lg.max_bot-lg.min_top)/2;
-            bool is_f=(std::abs(lcy-sy)<=line_t),is_l=(std::abs(lcy-ey)<=line_t);
+            bool is_f=(lcy<=sy+line_t)&&(lcy>sy-line_t);
+            bool is_l=(lcy<=ey+line_t)&&(lcy>ey-line_t);
             int hl_l=sel[lg.start]->x,hl_r=sel[lg.end-1]->x+sel[lg.end-1]->width;
             if(is_f)hl_l=clip_left(sel,lg,sx);if(is_l)hl_r=clip_right(sel,lg,ex);
             if(hl_r>hl_l){cairo_rectangle(cr,hl_l-sx_,lg.min_top-sy_,hl_r-hl_l,lg.max_bot-lg.min_top);cairo_fill(cr);}}}
@@ -374,7 +377,8 @@ public:
         int sx,sy,ex,ey;sel_.get_ordered(sx,sy,ex,ey);std::string res;int last_y=-9999;
         for(int li=0;li<(int)lines.size();li++){auto&lg=lines[li];int lcy=sel[lg.start]->y+sel[lg.start]->height/2;
             int line_t=(lg.max_bot-lg.min_top)/2;
-            bool is_f=(std::abs(lcy-sy)<=line_t),is_l=(std::abs(lcy-ey)<=line_t);
+            bool is_f=(lcy<=sy+line_t)&&(lcy>sy-line_t);
+            bool is_l=(lcy<=ey+line_t)&&(lcy>ey-line_t);
             for(int j=lg.start;j<lg.end;j++){const TextSpan&sp=*sel[j];int cy=sp.y+sp.height/2;
                 int bs=0,be=(int)sp.text.size();
                 if(is_f&&j==lg.start&&sx>sp.x&&sx<sp.x+sp.width)bs=x_to_index(sp,sx);
@@ -527,25 +531,27 @@ private:
     }
     static void set_color(cairo_t*cr,const litehtml::web_color&c){
         cairo_set_source_rgba(cr,c.red/255.0,c.green/255.0,c.blue/255.0,c.alpha/255.0);}
-    /* `t` is the y-tolerance for "on this line". Using half the span's own
-       height makes a span "the line under the cursor" anywhere within its
-       top..bottom range, so the line-switch happens at the midpoint
-       between adjacent lines (browser-style) rather than the moment you
-       nudge past the center. */
+    /* Lines own y-ranges as half-open intervals [cy - t, cy + t), with
+       t = sp.height/2. At the exact boundary between two lines the LOWER
+       line owns the cursor — there is no "between two lines" state, no
+       both-partial flicker, just a clean atomic switch at the midpoint.
+
+       `before_*` is inclusive (`cy <= sy - t`) and `after_*` is strict
+       (`cy > sy + t`); flipping the boundary y from on-this-line to
+       above-this-line happens at the same instant for both sides. */
     bool span_in(const TextSpan&sp,int sx,int sy,int ex,int ey)const{
         int cy = sp.y + sp.height/2;
         int t  = sp.height/2;
-        bool after_anchor  = cy > sy + t;
-        bool before_anchor = cy < sy - t;
-        bool before_extent = cy < ey - t;
-        bool after_extent  = cy > ey + t;
+        bool after_anchor  = cy >  sy + t;
+        bool before_anchor = cy <= sy - t;
+        bool before_extent = cy <= ey - t;
+        bool after_extent  = cy >  ey + t;
 
         /* Both endpoints land on this line. get_ordered may have produced
            sx > ex (it sorts strictly by y, so a same-line drag whose y
-           wobbles even one pixel swaps the x's). Without this branch the
-           two partial-x checks become impossible to satisfy and the
-           selection visibly empties whenever the cursor wobbles vertically
-           within the anchor's line. */
+           wobbles even one pixel swaps the x's). Normalise here so the
+           selection doesn't visibly empty whenever the cursor wobbles
+           vertically within the anchor's line. */
         if (!after_anchor && !before_anchor && !before_extent && !after_extent) {
             int xlo = sx < ex ? sx : ex;
             int xhi = sx < ex ? ex : sx;
