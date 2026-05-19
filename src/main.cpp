@@ -1710,18 +1710,22 @@ int main(int argc, char **argv) {
     app.file_path = file;
     { auto sl = app.file_path.find_last_of('/');
       app.file_basename = (sl == std::string::npos) ? app.file_path : app.file_path.substr(sl + 1); }
-    app.zoom            = std::clamp(persisted.zoom, ZOOM_MIN, ZOOM_MAX);
+    /* Default = global persisted; override with this file's saved view if
+       it's in the LRU. */
+    double initial_zoom = persisted.zoom;
+    for (const auto &kv : persisted.files) {
+        if (kv.first == path_hash) {
+            app.scroll_x = kv.second.scroll_x;
+            app.scroll_y = kv.second.scroll_y;
+            initial_zoom = kv.second.zoom;
+            break;
+        }
+    }
+    app.zoom            = std::clamp(initial_zoom, ZOOM_MIN, ZOOM_MAX);
     app.dark_mode       = persisted.dark_mode;
     app.case_sensitive  = persisted.case_sensitive;
     app.whole_word      = persisted.whole_word;
     app.regex_mode      = persisted.regex_mode;
-    for (const auto &kv : persisted.scroll) {
-        if (kv.first == path_hash) {
-            app.scroll_x = kv.second.x;
-            app.scroll_y = kv.second.y;
-            break;
-        }
-    }
     app.source_md       = ss.str();
     app.html            = add_heading_ids(md2html(app.source_md, app.dark_mode));
     app.original_html   = app.html;
@@ -1781,8 +1785,10 @@ int main(int argc, char **argv) {
     mdv_window_run(w);
 
     /* Snapshot state before tearing down. Start from the loaded `persisted`
-       to carry forward other files' scroll LRU entries; then update this
-       file's slot (move-to-back + cap to SCROLL_LRU_MAX). */
+       to carry forward other files' view-state LRU entries; then update
+       this file's slot (move-to-back + cap to FILES_LRU_MAX). Global
+       `zoom` mirrors the just-closed file's zoom so unseen files inherit
+       a sensible default. */
     mdv::State out     = persisted;
     out.zoom           = app.zoom;
     out.window_width   = mdv_window_surface_width(w);
@@ -1791,7 +1797,7 @@ int main(int argc, char **argv) {
     out.case_sensitive = app.case_sensitive;
     out.whole_word     = app.whole_word;
     out.regex_mode     = app.regex_mode;
-    mdv::scroll_touch(out, path_hash, { app.scroll_x, app.scroll_y });
+    mdv::files_touch(out, path_hash, { app.scroll_x, app.scroll_y, app.zoom });
     mdv::save_state(out);
 
     app.live_reloader.stop();

@@ -4,9 +4,14 @@
    (or $HOME/.config/mdview/state).
 
    Global preferences (zoom, window size, theme, search flags) plus a small
-   bounded LRU map of per-file scroll positions, keyed by a 64-bit hash of
-   the file's canonical path. The hash means an observer glancing at the
-   state file sees opaque tokens, not a list of paths you've opened. */
+   bounded LRU map of per-file view state — scroll position and zoom —
+   keyed by a 64-bit hash of the file's canonical path. The hash means an
+   observer glancing at the state file sees opaque tokens, not a list of
+   paths you've opened.
+
+   Global `zoom` doubles as the default for any file that isn't in the
+   LRU yet — so the zoom level you last closed becomes what new files
+   inherit. */
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -21,7 +26,7 @@
 
 namespace mdv {
 
-struct ScrollPos { double x = 0, y = 0; };
+struct FileView { double scroll_x = 0, scroll_y = 0; double zoom = 1.0; };
 
 struct State {
     double zoom            = 1.0;
@@ -31,13 +36,13 @@ struct State {
     bool   case_sensitive  = false;
     bool   whole_word      = false;
     bool   regex_mode      = false;
-    /* Scroll-position LRU. Vector (not map) so we can preserve recency
+    /* Per-file view-state LRU. Vector (not map) so we can preserve recency
        order — most recently accessed at the back, oldest at the front,
-       capped at SCROLL_LRU_MAX entries. Key is FNV1a-64(canonical_path). */
-    std::vector<std::pair<uint64_t, ScrollPos>> scroll;
+       capped at FILES_LRU_MAX entries. Key is FNV1a-64(canonical_path). */
+    std::vector<std::pair<uint64_t, FileView>> files;
 };
 
-static const size_t SCROLL_LRU_MAX = 20;
+static const size_t FILES_LRU_MAX = 20;
 
 /* 64-bit FNV1a. We're hashing paths for identity ("is this the same file?"),
    not for crypto, so this trivial mixer is plenty. Stable across runs and
@@ -70,13 +75,13 @@ static inline bool hex_hash(const std::string &hex, uint64_t &out) {
 /* LRU touch: if `h` already has an entry, drop it; push the new value at
    the back so it's marked most-recently-used; truncate front-side if we
    exceed the cap. */
-static inline void scroll_touch(State &s, uint64_t h, ScrollPos p) {
-    for (auto it = s.scroll.begin(); it != s.scroll.end(); ) {
-        if (it->first == h) it = s.scroll.erase(it);
+static inline void files_touch(State &s, uint64_t h, FileView v) {
+    for (auto it = s.files.begin(); it != s.files.end(); ) {
+        if (it->first == h) it = s.files.erase(it);
         else ++it;
     }
-    s.scroll.push_back({h, p});
-    while (s.scroll.size() > SCROLL_LRU_MAX) s.scroll.erase(s.scroll.begin());
+    s.files.push_back({h, v});
+    while (s.files.size() > FILES_LRU_MAX) s.files.erase(s.files.begin());
 }
 
 /* Returns "$XDG_CONFIG_HOME/mdview/state", falling back to
@@ -115,21 +120,35 @@ static inline State load_state() {
     std::string line;
     while (std::getline(f, line)) {
         if (line.empty() || line[0] == '#') continue;
-        /* `scroll:<16-hex>=<x>,<y>` — hash key is fixed-width, so we can
-           split unambiguously after the "scroll:" prefix. */
-        if (line.compare(0, 7, "scroll:") == 0) {
-            size_t eq = line.find('=', 7);
+        /* `view:<16-hex>=<scroll_x>,<scroll_y>,<zoom>` — hash key is fixed-width
+           so we can split unambiguously after the prefix. We still accept
+           the legacy `scroll:<hex>=<x>,<y>` lines from before per-file zoom
+           was added; zoom defaults to 1.0 there. */
+        bool is_view   = (line.compare(0, 5, "view:")   == 0);
+        bool is_scroll = (line.compare(0, 7, "scroll:") == 0);
+        if (is_view || is_scroll) {
+            size_t prefix_len = is_view ? 5 : 7;
+            size_t eq = line.find('=', prefix_len);
             if (eq == std::string::npos) continue;
-            std::string hex = line.substr(7, eq - 7);
+            std::string hex = line.substr(prefix_len, eq - prefix_len);
             std::string val = line.substr(eq + 1);
             uint64_t h;
             if (!hex_hash(hex, h)) continue;
-            size_t comma = val.find(',');
-            if (comma == std::string::npos) continue;
-            ScrollPos sp;
-            sp.x = atof(val.substr(0, comma).c_str());
-            sp.y = atof(val.substr(comma + 1).c_str());
-            s.scroll.push_back({h, sp});
+            /* Split val on commas. */
+            std::vector<std::string> parts;
+            size_t start = 0;
+            for (size_t i = 0; i <= val.size(); i++) {
+                if (i == val.size() || val[i] == ',') {
+                    parts.push_back(val.substr(start, i - start));
+                    start = i + 1;
+                }
+            }
+            if (parts.size() < 2) continue;
+            FileView fv;
+            fv.scroll_x = atof(parts[0].c_str());
+            fv.scroll_y = atof(parts[1].c_str());
+            if (parts.size() >= 3) fv.zoom = atof(parts[2].c_str());
+            s.files.push_back({h, fv});
             continue;
         }
         size_t eq = line.find('=');
@@ -145,7 +164,7 @@ static inline State load_state() {
         else if (key == "regex_mode")     s.regex_mode     = (val == "1" || val == "true");
     }
     /* Clamp to LRU cap on load too, defending against a hand-edited oversize file. */
-    while (s.scroll.size() > SCROLL_LRU_MAX) s.scroll.erase(s.scroll.begin());
+    while (s.files.size() > FILES_LRU_MAX) s.files.erase(s.files.begin());
     return s;
 }
 
@@ -166,9 +185,11 @@ static inline void save_state(const State &s) {
         f << "case_sensitive=" << (s.case_sensitive ? 1 : 0) << "\n";
         f << "whole_word="     << (s.whole_word ? 1 : 0)     << "\n";
         f << "regex_mode="     << (s.regex_mode ? 1 : 0)     << "\n";
-        for (const auto &kv : s.scroll) {
-            f << "scroll:" << hash_hex(kv.first) << "="
-              << kv.second.x << "," << kv.second.y << "\n";
+        for (const auto &kv : s.files) {
+            f << "view:" << hash_hex(kv.first) << "="
+              << kv.second.scroll_x << ","
+              << kv.second.scroll_y << ","
+              << kv.second.zoom << "\n";
         }
     }
     rename(tmp.c_str(), p.c_str());
