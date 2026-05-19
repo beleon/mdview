@@ -1753,7 +1753,13 @@ int main(int argc, char **argv) {
     mdv_window *w = mdv_window_create(title.c_str(), win_w, win_h, &cb);
     if (!w) { fprintf(stderr, "Error: cannot create Wayland window\n"); return 1; }
     app.win = w;
-    do_layout(&app);
+    /* Sync the viewport to the actual window dims. The compositor's initial
+       xdg_toplevel.configure usually echoes the size we requested, which
+       means window.c's resize-on-change guard short-circuits and on_resize
+       never fires — leaving vp_w/vp_h at the struct defaults (900×700)
+       instead of the restored window size. Route through on_resize so the
+       first layout uses the right dimensions. */
+    on_resize(w, mdv_window_width(w), mdv_window_height(w), &app);
 
     mdv_window_set_after_init(w, on_first_frame, &app);
     if (!no_reload) app.live_reloader.start(w, app.file_path, reload_file, &app);
