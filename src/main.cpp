@@ -1113,7 +1113,9 @@ static void extend_selection_drag(App *a, int doc_x, int doc_y) {
     Selection &sel = a->con.selection();
     if (sel.granularity == Selection::GRAN_CHAR) {
         sel.extent_x = doc_x;
-        sel.extent_y = doc_y;
+        /* Snap y to the nearest line center so the stored extent never sits
+           in a gap or at a boundary that downstream code might disagree on. */
+        sel.extent_y = a->con.snap_y_to_line(doc_y);
         sel.active = true;
         return;
     }
@@ -1333,8 +1335,16 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
             }
 
             sel.granularity = Selection::GRAN_CHAR;
-            if ((mods & MDV_MOD_SHIFT) && sel.active) { sel.extent_x = dx; sel.extent_y = dy; sel.dragging = true; }
-            else { sel.anchor_x = dx; sel.anchor_y = dy; sel.extent_x = dx; sel.extent_y = dy; sel.dragging = true; sel.active = false; }
+            /* Snap click y to a line center. Clicking between two words on
+               line A would otherwise leave anchor_y at the click's raw y
+               (which might be a few px above/below cy_A), and a later
+               drag whose extent's y wobbles to the opposite side of cy_A
+               then trips get_ordered into swapping sx/ex with both points
+               nominally still on line A. Snapping at storage keeps the
+               anchor y firmly on its line. */
+            int dy_snap = a->con.snap_y_to_line(dy);
+            if ((mods & MDV_MOD_SHIFT) && sel.active) { sel.extent_x = dx; sel.extent_y = dy_snap; sel.dragging = true; }
+            else { sel.anchor_x = dx; sel.anchor_y = dy_snap; sel.extent_x = dx; sel.extent_y = dy_snap; sel.dragging = true; sel.active = false; }
             mdv_window_request_redraw(w);
         } else {
             if (a->sb_v_drag) { a->sb_v_drag = false; mdv_window_request_redraw(w); return; }

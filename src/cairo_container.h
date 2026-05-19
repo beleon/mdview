@@ -160,6 +160,7 @@ public:
 
     struct LineGroup{int start,end,min_top,max_bot;};
 
+public:
     /* Snap an arbitrary doc-y to the center of the nearest recorded line.
        Used to enforce that selection endpoints always live on some line:
        sy and ey are routed through this before any span membership check,
