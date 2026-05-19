@@ -543,12 +543,6 @@ static void draw_sidebar(App *a, cairo_t *cr) {
     cairo_restore(cr);
 }
 
-/* Context menu helpers (forward declarations of functions that reference
-   App's nested types). Implementations follow draw_search_bar. */
-static void   menu_close(App *a);
-static int    menu_item_at(App *a, int x, int y);
-static void   draw_context_menu(App *a, cairo_t *cr);
-
 /* Returns the TOC entry index under window-coord (x,y), or -1. */
 static int toc_index_at(App *a, int x, int y) {
     if (!a->toc_visible || x < 0 || x >= SIDEBAR_W) return -1;
@@ -1722,7 +1716,6 @@ int main(int argc, char **argv) {
     { auto sl = app.file_path.find_last_of('/');
       app.con.set_base_dir(sl != std::string::npos ? app.file_path.substr(0, sl) : "."); }
     app.doc = litehtml::document::createFromString(app.html.c_str(), &app.con, litehtml::master_css);
-    app.pinch_base_zoom = 1.0;
 
     app.highlighter.set_tool(mdv::detect_tool(no_highlight));
 

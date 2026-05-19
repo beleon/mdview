@@ -29,9 +29,9 @@
 #define MULTI_CLICK_MS      400  /* time window for double/triple click */
 #define MULTI_CLICK_DIST_SQ 25   /* 5px radius, squared */
 
-/* Cursor identity. With cursor-shape-v1, the compositor draws the user's
-   actual themed cursor; we just say which shape. Without it we fall back to
-   wl_cursor_theme and an embedded buffer. */
+/* Cursor identity. With cursor-shape-v1 the compositor draws the user's
+   actual themed cursor and we just say which shape; without it we fall
+   back to loading the user's wl_cursor_theme ourselves. */
 typedef enum {
     MDV_CURSOR_DEFAULT,
     MDV_CURSOR_TEXT,
@@ -110,7 +110,7 @@ struct mdv_window {
     uint32_t repeat_mods;
     bool repeat_armed;
     /* Multi-click detection (BTN_LEFT). Cycles 1→2→3→1 within MULTI_CLICK_MS
-       and MULTI_CLICK_DIST. Held across press+release of one click. */
+       and MULTI_CLICK_DIST_SQ. Held across press+release of one click. */
     struct timespec last_click_time;
     int last_click_x, last_click_y;
     int click_count;

@@ -339,7 +339,6 @@ public:
     HLTool tool() const     { return tool_; }
     bool   active() const   { return tool_ != HLTool::None; }
     bool   all_done() const { return all_done_; }
-    bool   any_done() const { return first_fired_; }
 
     /* Hand over a set of code blocks and start highlighting up to MAX_INFLIGHT
        in parallel. on_milestone fires:

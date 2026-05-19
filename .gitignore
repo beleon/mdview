@@ -1,7 +1,5 @@
 build/
 dist/
-*.tar.gz
-*.tar
 *.o
 *.a
 compile_commands.json

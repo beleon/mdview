@@ -15,7 +15,7 @@ Takes a single CLI argument — a path to a `.md` file — converts it to HTML v
                                                          (window, input, shared memory)
 ```
 
-**< 4k lines of our code, zero frameworks — and a lot fits in there:** find-in-doc with case / whole-word / regex, async syntax highlighting, dark mode, outline sidebar, live reload, right-click menu, persistent state, HiDPI rendering, pinch zoom.
+**< 5k lines of our code, zero frameworks — and a lot fits in there:** find-in-doc with case / whole-word / regex, async syntax highlighting, dark mode, outline sidebar, live reload, right-click menu, persistent state, HiDPI rendering, pinch zoom, themed cursors, embedded app icon, self-installer.
 
 ## Features
 
@@ -41,6 +41,9 @@ Takes a single CLI argument — a path to a `.md` file — converts it to HTML v
 - Whole-word and regex search modes (Alt+W / Alt+R) alongside case-sensitive (Alt+C)
 - HiDPI-aware rendering via `wl_surface.preferred_buffer_scale` (integer scales)
 - Detaches from the launching terminal (VS Code style); `-f` / `--foreground` keeps it attached
+- Themed cursors via `wp_cursor_shape_v1` (compositor draws the user's actual cursor theme); falls back to `wl_cursor_theme` on older compositors
+- App icon embedded in the binary and announced via `xdg_toplevel_icon_v1` on compositors that support it
+- Self-installer: `mdview --install` lays out the binary, icons, and `.desktop` entry under `~/.local/` (XDG-compliant); `--uninstall` reverses it
 
 ## Building
 
@@ -69,6 +72,17 @@ Produces `dist/mdview`. The binary is self-contained — `dist/mdview --install`
 ```bash
 ./mdview path/to/document.md
 ```
+
+### Flags
+
+| Flag | Action |
+|------|--------|
+| `--no-highlight` | Disable syntax highlighting of code blocks |
+| `--no-reload` | Disable live-reload on file change |
+| `-f` / `--foreground` | Stay attached to the launching terminal |
+| `--install` | Install binary + icons + `.desktop` under `~/.local/` |
+| `--uninstall` | Undo `--install` |
+| `-h` / `--help` | Show usage |
 
 ### Keyboard
 
@@ -119,6 +133,7 @@ mdview negotiates server-side decorations via the `xdg-decoration-unstable-v1` p
 Only libraries already loaded in any Wayland session:
 
 - `libwayland-client.so`
+- `libwayland-cursor.so` (only loaded on compositors lacking `wp_cursor_shape_v1`)
 - `libxkbcommon.so`
 - `libcairo.so`
 - `libpangocairo-1.0.so` / `libpango-1.0.so`
