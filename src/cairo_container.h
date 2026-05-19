@@ -8,6 +8,7 @@
 #include "litehtml.h"
 
 #include <cmath>
+#include <limits>
 #include <vector>
 #include <string>
 #include <map>
@@ -158,8 +159,37 @@ public:
         PangoRectangle pos; pango_layout_index_to_pos(pl_,bi,&pos); return sp.x+pos.x/PANGO_SCALE; }
 
     struct LineGroup{int start,end,min_top,max_bot;};
+
+    /* Snap an arbitrary doc-y to the center of the nearest recorded line.
+       Used to enforce that selection endpoints always live on some line:
+       sy and ey are routed through this before any span membership check,
+       so there's no in-between / gap-edge state where the selection could
+       go empty. If the cursor is inside a line's y-range we use that line;
+       otherwise we pick the line whose top-or-bottom is closest. */
+    int snap_y_to_line(int y) const {
+        if (spans_.empty()) return y;
+        int best_cy = y;
+        int best_dist = std::numeric_limits<int>::max();
+        for (const TextSpan &sp : spans_) {
+            int top = sp.y, bot = sp.y + sp.height;
+            if (y >= top && y < bot) return sp.y + sp.height / 2;
+            int dist = (y < top) ? (top - y) : (y - bot + 1);
+            if (dist < best_dist) {
+                best_dist = dist;
+                best_cy   = sp.y + sp.height / 2;
+            }
+        }
+        return best_cy;
+    }
+    /* Like sel_.get_ordered but with sy/ey snapped to the closest line. */
+    void selection_bounds(int &sx, int &sy, int &ex, int &ey) const {
+        sel_.get_ordered(sx, sy, ex, ey);
+        sy = snap_y_to_line(sy);
+        ey = snap_y_to_line(ey);
+    }
+
     std::vector<const TextSpan*>get_selected_sorted()const{
-        if(!sel_.active)return{}; int sx,sy,ex,ey;sel_.get_ordered(sx,sy,ex,ey);
+        if(!sel_.active)return{}; int sx,sy,ex,ey;selection_bounds(sx,sy,ex,ey);
         std::vector<const TextSpan*>s; for(auto&sp:spans_)if(span_in(sp,sx,sy,ex,ey))s.push_back(&sp);
         std::sort(s.begin(),s.end(),[](const TextSpan*a,const TextSpan*b){
             int ay=a->y+a->height/2,by=b->y+b->height/2;return(std::abs(ay-by)>4)?ay<by:a->x<b->x;}); return s; }
@@ -356,7 +386,7 @@ public:
 
     void draw_selection_overlay(cairo_t *cr)const{
         auto sel=get_selected_sorted();if(sel.empty())return;auto lines=group_lines(sel);
-        int sx,sy,ex,ey;sel_.get_ordered(sx,sy,ex,ey);
+        int sx,sy,ex,ey;selection_bounds(sx,sy,ex,ey);
         if(dark_mode_)cairo_set_source_rgba(cr,0.35,0.55,1.0,0.35);
         else          cairo_set_source_rgba(cr,0.20,0.50,0.90,0.30);
         for(int li=0;li<(int)lines.size();li++){auto&lg=lines[li];int lcy=sel[lg.start]->y+sel[lg.start]->height/2;
@@ -374,7 +404,7 @@ public:
 
     std::string get_selected_text()const{
         auto sel=get_selected_sorted();if(sel.empty())return{};auto lines=group_lines(sel);
-        int sx,sy,ex,ey;sel_.get_ordered(sx,sy,ex,ey);std::string res;int last_y=-9999;
+        int sx,sy,ex,ey;selection_bounds(sx,sy,ex,ey);std::string res;int last_y=-9999;
         for(int li=0;li<(int)lines.size();li++){auto&lg=lines[li];int lcy=sel[lg.start]->y+sel[lg.start]->height/2;
             int line_t=(lg.max_bot-lg.min_top)/2;
             bool is_f=(lcy<=sy+line_t)&&(lcy>sy-line_t);
