@@ -199,10 +199,27 @@ public:
         while(i<n){int ly=s[i]->y+s[i]->height/2;LineGroup lg;lg.start=i;lg.min_top=s[i]->y;lg.max_bot=s[i]->y+s[i]->height;i++;
             while(i<n&&std::abs((s[i]->y+s[i]->height/2)-ly)<=4){lg.min_top=std::min(lg.min_top,s[i]->y);lg.max_bot=std::max(lg.max_bot,s[i]->y+s[i]->height);i++;}
             lg.end=i;lines.push_back(lg);}return lines;}
+    /* When rx falls inside a span, snap to the character boundary there.
+       When rx falls in an inter-span gap (e.g. between two words) or in
+       the margin BEFORE the line's first selected span, return rx itself
+       so the highlight rectangle starts visually at the click/cursor
+       position — not at the next word's left edge, which produced the
+       "selection start jumps to x=40" effect. Same idea mirrored for
+       clip_right. */
     int clip_left(const std::vector<const TextSpan*>&s,const LineGroup&lg,int rx)const{
-        for(int j=lg.start;j<lg.end;j++){if(rx>=s[j]->x&&rx<=s[j]->x+s[j]->width)return index_to_x(*s[j],x_to_index(*s[j],rx));if(rx<s[j]->x)return s[j]->x;}return s[lg.start]->x;}
+        for(int j=lg.start;j<lg.end;j++){
+            if(rx>=s[j]->x&&rx<=s[j]->x+s[j]->width)return index_to_x(*s[j],x_to_index(*s[j],rx));
+            if(rx<s[j]->x)return rx;
+        }
+        return s[lg.start]->x;
+    }
     int clip_right(const std::vector<const TextSpan*>&s,const LineGroup&lg,int rx)const{
-        for(int j=lg.end-1;j>=lg.start;j--){if(rx>=s[j]->x&&rx<=s[j]->x+s[j]->width)return index_to_x(*s[j],x_to_index(*s[j],rx));if(rx>s[j]->x+s[j]->width)return s[j]->x+s[j]->width;}return s[lg.end-1]->x+s[lg.end-1]->width;}
+        for(int j=lg.end-1;j>=lg.start;j--){
+            if(rx>=s[j]->x&&rx<=s[j]->x+s[j]->width)return index_to_x(*s[j],x_to_index(*s[j],rx));
+            if(rx>s[j]->x+s[j]->width)return rx;
+        }
+        return s[lg.end-1]->x+s[lg.end-1]->width;
+    }
 
     /* Find the recorded text span whose bounding box contains (doc_x, doc_y).
        Linear scan — fine for typical document sizes. */
