@@ -3,15 +3,11 @@
 /* Persisted preferences. Flat key=value file at $XDG_CONFIG_HOME/mdview/state
    (or $HOME/.config/mdview/state).
 
-   Global preferences (zoom, window size, theme, search flags) plus a small
+   Global preferences (window size, theme, search flags) plus a small
    bounded LRU map of per-file view state — scroll position and zoom —
    keyed by a 64-bit hash of the file's canonical path. The hash means an
    observer glancing at the state file sees opaque tokens, not a list of
-   paths you've opened.
-
-   Global `zoom` doubles as the default for any file that isn't in the
-   LRU yet — so the zoom level you last closed becomes what new files
-   inherit. */
+   paths you've opened. */
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -29,7 +25,6 @@ namespace mdv {
 struct FileView { double scroll_x = 0, scroll_y = 0; double zoom = 1.0; };
 
 struct State {
-    double zoom            = 1.0;
     int    window_width    = 900;
     int    window_height   = 700;
     bool   dark_mode       = false;
@@ -155,8 +150,7 @@ static inline State load_state() {
         if (eq == std::string::npos) continue;
         std::string key = line.substr(0, eq);
         std::string val = line.substr(eq + 1);
-        if      (key == "zoom")           s.zoom = atof(val.c_str());
-        else if (key == "window_width")   s.window_width = atoi(val.c_str());
+        if      (key == "window_width")   s.window_width = atoi(val.c_str());
         else if (key == "window_height")  s.window_height = atoi(val.c_str());
         else if (key == "dark_mode")      s.dark_mode      = (val == "1" || val == "true");
         else if (key == "case_sensitive") s.case_sensitive = (val == "1" || val == "true");
@@ -178,7 +172,6 @@ static inline void save_state(const State &s) {
         std::ofstream f(tmp, std::ios::trunc);
         if (!f.is_open()) return;
         f << "# mdview persisted state — auto-generated\n";
-        f << "zoom="           << s.zoom           << "\n";
         f << "window_width="   << s.window_width   << "\n";
         f << "window_height="  << s.window_height  << "\n";
         f << "dark_mode="      << (s.dark_mode ? 1 : 0)      << "\n";

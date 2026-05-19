@@ -1710,9 +1710,9 @@ int main(int argc, char **argv) {
     app.file_path = file;
     { auto sl = app.file_path.find_last_of('/');
       app.file_basename = (sl == std::string::npos) ? app.file_path : app.file_path.substr(sl + 1); }
-    /* Default = global persisted; override with this file's saved view if
-       it's in the LRU. */
-    double initial_zoom = persisted.zoom;
+    /* Restore scroll + zoom if this file is in the LRU; otherwise the
+       App-struct defaults (zoom=1.0, scroll=0) stand. */
+    double initial_zoom = 1.0;
     for (const auto &kv : persisted.files) {
         if (kv.first == path_hash) {
             app.scroll_x = kv.second.scroll_x;
@@ -1786,11 +1786,8 @@ int main(int argc, char **argv) {
 
     /* Snapshot state before tearing down. Start from the loaded `persisted`
        to carry forward other files' view-state LRU entries; then update
-       this file's slot (move-to-back + cap to FILES_LRU_MAX). Global
-       `zoom` mirrors the just-closed file's zoom so unseen files inherit
-       a sensible default. */
+       this file's slot (move-to-back + cap to FILES_LRU_MAX). */
     mdv::State out     = persisted;
-    out.zoom           = app.zoom;
     out.window_width   = mdv_window_surface_width(w);
     out.window_height  = mdv_window_surface_height(w);
     out.dark_mode      = app.dark_mode;
