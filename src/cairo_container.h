@@ -528,14 +528,34 @@ private:
     static void set_color(cairo_t*cr,const litehtml::web_color&c){
         cairo_set_source_rgba(cr,c.red/255.0,c.green/255.0,c.blue/255.0,c.alpha/255.0);}
     /* `t` is the y-tolerance for "on this line". Using half the span's own
-       height means a span is "the line under the cursor" anywhere within
-       its top..bottom range, which makes the line-switch happen at the
-       midpoint between adjacent lines (browser-style) rather than the
-       moment you nudge past a line's center. */
+       height makes a span "the line under the cursor" anywhere within its
+       top..bottom range, so the line-switch happens at the midpoint
+       between adjacent lines (browser-style) rather than the moment you
+       nudge past the center. */
     bool span_in(const TextSpan&sp,int sx,int sy,int ex,int ey)const{
-        int cy=sp.y+sp.height/2; const int t=sp.height/2;
-        bool af=(cy>sy+t)?true:(cy<sy-t)?false:(sp.x+sp.width>sx);
-        bool bf=(cy<ey-t)?true:(cy>ey+t)?false:(sp.x<ex);return af&&bf;}
+        int cy = sp.y + sp.height/2;
+        int t  = sp.height/2;
+        bool after_anchor  = cy > sy + t;
+        bool before_anchor = cy < sy - t;
+        bool before_extent = cy < ey - t;
+        bool after_extent  = cy > ey + t;
+
+        /* Both endpoints land on this line. get_ordered may have produced
+           sx > ex (it sorts strictly by y, so a same-line drag whose y
+           wobbles even one pixel swaps the x's). Without this branch the
+           two partial-x checks become impossible to satisfy and the
+           selection visibly empties whenever the cursor wobbles vertically
+           within the anchor's line. */
+        if (!after_anchor && !before_anchor && !before_extent && !after_extent) {
+            int xlo = sx < ex ? sx : ex;
+            int xhi = sx < ex ? ex : sx;
+            return sp.x + sp.width > xlo && sp.x < xhi;
+        }
+
+        bool af = after_anchor  ? true : before_anchor ? false : (sp.x + sp.width > sx);
+        bool bf = before_extent ? true : after_extent  ? false : (sp.x < ex);
+        return af && bf;
+    }
 
     int vw_=800,vh_=600,sy_=0,sx_=0;
     std::string bd_;
