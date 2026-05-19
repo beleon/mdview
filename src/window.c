@@ -628,51 +628,10 @@ mdv_window *mdv_window_create(const char *title,int width,int height,const mdv_c
        using the user's actual theme. Loading our own theme would just be
        a wasted-memory fallback we'd never use. */
     if (!w->cursor_shape_manager) {
-        /* Resolve the cursor theme + size, in priority order:
-             1. XCURSOR_THEME / XCURSOR_SIZE — explicit user choice / X11 path
-             2. gsettings org.gnome.desktop.interface — GNOME's storage
-             3. NULL / 24 — libwayland-cursor "default" theme + fallback size
-           Mutter < 47 doesn't speak cursor-shape-v1 yet, so on GNOME 46
-           (Ubuntu 24.04) the gsettings query is what actually gets us the
-           user's themed cursors. Shelling out to `gsettings` is ugly but
-           avoids a hard dep on libgio just for this one lookup. */
-        char *theme_buf = NULL;
-        char theme_storage[256];
         const char *theme_name = getenv("XCURSOR_THEME");
         int cursor_size = 24;
         const char *size_env = getenv("XCURSOR_SIZE");
         if (size_env) { int sz = atoi(size_env); if (sz > 0) cursor_size = sz; }
-        if (!theme_name || !*theme_name) {
-            FILE *p = popen("gsettings get org.gnome.desktop.interface cursor-theme 2>/dev/null", "r");
-            if (p) {
-                char buf[260];
-                if (fgets(buf, sizeof(buf), p)) {
-                    /* gsettings prints `'Yaru'\n` — strip quotes + newline. */
-                    char *s = buf; while (*s == ' ' || *s == '\'') s++;
-                    char *e = s + strlen(s);
-                    while (e > s && (e[-1] == '\n' || e[-1] == '\'' || e[-1] == ' ')) e--;
-                    *e = '\0';
-                    if (s < e) {
-                        snprintf(theme_storage, sizeof(theme_storage), "%s", s);
-                        theme_buf = theme_storage;
-                        theme_name = theme_storage;
-                    }
-                }
-                pclose(p);
-            }
-        }
-        (void)theme_buf;
-        if (!size_env) {
-            FILE *p = popen("gsettings get org.gnome.desktop.interface cursor-size 2>/dev/null", "r");
-            if (p) {
-                char buf[32];
-                if (fgets(buf, sizeof(buf), p)) {
-                    int sz = atoi(buf);
-                    if (sz > 0) cursor_size = sz;
-                }
-                pclose(p);
-            }
-        }
         w->cursor_theme = wl_cursor_theme_load(theme_name, cursor_size, w->shm);
         if (w->cursor_theme) {
             w->cursor_surface = wl_compositor_create_surface(w->compositor);
