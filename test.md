@@ -1,12 +1,12 @@
 # Hello MDView
 
-This is a **markdown viewer** built with JUCE + litehtml + md4c.
+This is a **markdown viewer** built with libwayland-client + Cairo + Pango + litehtml + md4c.
 
 ## Features
 
 - Converts Markdown to HTML via [md4c](https://github.com/mity/md4c)
 - Renders HTML via litehtml
-- Displays in a native JUCE desktop window
+- Draws in a native Wayland window using Cairo + Pango
 - Supports scrolling
 
 ## Code Example
@@ -38,4 +38,4 @@ int main(int argc, char** argv) {
 
 ---
 
-*Built with ❤️ using JUCE, litehtml, and md4c*
+*Built with ❤️ using Wayland, Cairo, Pango, litehtml, and md4c*
