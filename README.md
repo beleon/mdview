@@ -59,9 +59,10 @@ cmake --build build
 ### Build with Podman
 
 ```bash
-chmod +x build.sh
 ./build.sh
 ```
+
+Produces `dist/mdview`. The binary is self-contained — `dist/mdview --install` lays out the binary, icons, and `.desktop` entry under `~/.local/`.
 
 ## Usage
 

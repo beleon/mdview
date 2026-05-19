@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # ============================================================================
-# build.sh — build mdview inside a Podman container and package as a tarball
+# build.sh — build mdview inside a Podman container and drop the binary
+# under dist/. No tarball — the binary is self-contained (icons baked in,
+# `mdview --install` lays it out under ~/.local).
 #
 # Usage:
-#   ./build.sh              # builds and produces mdview-linux-x86_64.tar.gz
-#   ./build.sh --no-cache   # rebuild from scratch
+#   ./build.sh              # build and produce dist/mdview
+#   ./build.sh --no-cache   # rebuild from scratch (no podman layer cache)
 # ============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="mdview-builder"
 CONTAINER_NAME="mdview-extract-$$"
-OUTPUT_TAR="mdview-linux-x86_64.tar.gz"
+OUT_DIR="${SCRIPT_DIR}/dist"
 
 EXTRA_BUILD_ARGS=()
 for arg in "$@"; do
@@ -20,7 +22,7 @@ for arg in "$@"; do
         --help|-h)
             echo "Usage: $0 [--no-cache]"
             echo ""
-            echo "Builds mdview inside a Podman container and produces ${OUTPUT_TAR}"
+            echo "Builds mdview inside a Podman container, leaving the binary at dist/mdview."
             exit 0
             ;;
         *) echo "Unknown argument: $arg"; exit 1 ;;
@@ -50,34 +52,30 @@ podman build \
 
 # ── Extract ─────────────────────────────────────────────────────────────────
 
-echo "==> Extracting build artifacts..."
+echo "==> Extracting binary..."
+mkdir -p "${OUT_DIR}"
+podman create --name "${CONTAINER_NAME}" "${IMAGE_NAME}" /bin/true >/dev/null
+trap 'podman rm -f "${CONTAINER_NAME}" &>/dev/null || true' EXIT
 
-podman create --name "${CONTAINER_NAME}" "${IMAGE_NAME}" /bin/true
-
-STAGING=$(mktemp -d)
-trap 'rm -rf "${STAGING}"; podman rm -f "${CONTAINER_NAME}" &>/dev/null || true' EXIT
-
-podman cp "${CONTAINER_NAME}:/opt/mdview" "${STAGING}/mdview"
+podman cp "${CONTAINER_NAME}:/build/mdview/build/mdview" "${OUT_DIR}/mdview"
 podman rm -f "${CONTAINER_NAME}" >/dev/null
-
-# ── Package ─────────────────────────────────────────────────────────────────
-
-echo "==> Packaging ${OUTPUT_TAR}..."
+trap - EXIT
 
 if command -v strip &>/dev/null; then
-    strip "${STAGING}/mdview/mdview" 2>/dev/null || true
+    strip "${OUT_DIR}/mdview" 2>/dev/null || true
 fi
+chmod +x "${OUT_DIR}/mdview"
 
-chmod +x "${STAGING}/mdview/mdview"
+SIZE=$(du -h "${OUT_DIR}/mdview" | cut -f1)
+BIN="${OUT_DIR}/mdview"
 
-tar -czf "${SCRIPT_DIR}/${OUTPUT_TAR}" \
-    -C "${STAGING}" \
-    mdview/
+# ── Done ────────────────────────────────────────────────────────────────────
 
-SIZE=$(du -h "${SCRIPT_DIR}/${OUTPUT_TAR}" | cut -f1)
-echo ""
-echo "==> Done! ${OUTPUT_TAR} (${SIZE})"
-echo ""
-echo "    Extract and run:"
-echo "      tar xzf ${OUTPUT_TAR}"
-echo "      ./mdview/mdview path/to/file.md"
+echo
+echo "==> Built ${BIN} (${SIZE})"
+echo
+echo "Install into ~/.local (binary + icons + desktop entry):"
+echo "    ${BIN} --install"
+echo
+echo "Or run directly:"
+echo "    ${BIN} path/to/file.md"
