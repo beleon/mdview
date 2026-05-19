@@ -1113,9 +1113,12 @@ static void extend_selection_drag(App *a, int doc_x, int doc_y) {
     Selection &sel = a->con.selection();
     if (sel.granularity == Selection::GRAN_CHAR) {
         sel.extent_x = doc_x;
-        /* Snap y to the nearest line center so the stored extent never sits
-           in a gap or at a boundary that downstream code might disagree on. */
-        sel.extent_y = a->con.snap_y_to_line(doc_y);
+        /* Snap y to a line center, biased toward the anchor's line. When
+           the cursor is within ~SNAP_BIAS_PX of the anchor's y (typical
+           hand wobble during a horizontal drag) we keep extent on the
+           anchor's line; outside that range we snap to whichever line
+           the cursor actually entered. */
+        sel.extent_y = a->con.snap_y_to_line(doc_y, sel.anchor_y);
         sel.active = true;
         return;
     }

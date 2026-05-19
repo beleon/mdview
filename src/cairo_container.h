@@ -164,19 +164,21 @@ public:
     /* Snap an arbitrary doc-y to the center of the nearest recorded line.
        Used to enforce that selection endpoints always live on some line.
 
-       Each line owns its actual y-range PLUS a small STICKY_MARGIN beyond
-       its bottom edge. With spans_ iterated in document order (top-to-
-       bottom), this means a few pixels of vertical wobble past a line's
-       bottom still snap to THAT line rather than instantly switching to
-       the next — small drag-y jitter doesn't reshape the selection.
-       Beyond the sticky zone, the cursor really has moved to the next
-       line and the snap switches. */
-    int snap_y_to_line(int y) const {
+       Optional `bias_y`: if the input y is within SNAP_BIAS_PX of bias_y,
+       return bias_y itself. Lets callers say "stick to whatever line this
+       OTHER y is on, as long as we haven't moved meaningfully away" —
+       used by extend_selection_drag with bias_y = anchor's y so a few
+       pixels of vertical wobble during a horizontal drag don't kick the
+       extent to a neighbouring line. */
+    static constexpr int SNAP_BIAS_PX = 12;
+    int snap_y_to_line(int y, int bias_y = std::numeric_limits<int>::min()) const {
         if (spans_.empty()) return y;
-        constexpr int STICKY_MARGIN = 8;
+        if (bias_y != std::numeric_limits<int>::min()
+         && std::abs(y - bias_y) <= SNAP_BIAS_PX) {
+            return bias_y;
+        }
         for (const TextSpan &sp : spans_) {
-            int top = sp.y, bot = sp.y + sp.height;
-            if (y >= top && y < bot + STICKY_MARGIN) return sp.y + sp.height / 2;
+            if (y >= sp.y && y < sp.y + sp.height) return sp.y + sp.height / 2;
         }
         int best_cy = y;
         int best_dist = std::numeric_limits<int>::max();
