@@ -9,12 +9,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <map>
 #include <string>
 
 namespace mdv {
-
-struct ScrollPos { double x = 0, y = 0; };
 
 struct State {
     double zoom            = 1.0;
@@ -24,11 +21,6 @@ struct State {
     bool   case_sensitive  = false;
     bool   whole_word      = false;
     bool   regex_mode      = false;
-    /* Per-file scroll position, keyed on the canonical (realpath) file path.
-       Globally-shared zoom/window/etc. live above; only the scroll offset
-       is doc-specific, so it gets its own keyed map rather than overwriting
-       on every file change. */
-    std::map<std::string, ScrollPos> scroll;
 };
 
 /* Returns "$XDG_CONFIG_HOME/mdview/state", falling back to
@@ -68,22 +60,6 @@ static inline State load_state() {
     std::string line;
     while (std::getline(f, line)) {
         if (line.empty() || line[0] == '#') continue;
-        /* `scroll:<path>=<x>,<y>` lines have a path that may itself contain
-           '=', so split on the LAST '=' (the value is always "x,y", which
-           has no '=' in it). */
-        if (line.compare(0, 7, "scroll:") == 0) {
-            size_t last_eq = line.rfind('=');
-            if (last_eq == std::string::npos || last_eq < 7) continue;
-            std::string path = line.substr(7, last_eq - 7);
-            std::string val  = line.substr(last_eq + 1);
-            size_t comma = val.find(',');
-            if (comma == std::string::npos) continue;
-            ScrollPos p;
-            p.x = atof(val.substr(0, comma).c_str());
-            p.y = atof(val.substr(comma + 1).c_str());
-            s.scroll[path] = p;
-            continue;
-        }
         size_t eq = line.find('=');
         if (eq == std::string::npos) continue;
         std::string key = line.substr(0, eq);
@@ -116,10 +92,6 @@ static inline void save_state(const State &s) {
         f << "case_sensitive=" << (s.case_sensitive ? 1 : 0) << "\n";
         f << "whole_word="     << (s.whole_word ? 1 : 0)     << "\n";
         f << "regex_mode="     << (s.regex_mode ? 1 : 0)     << "\n";
-        for (const auto &kv : s.scroll) {
-            f << "scroll:" << kv.first << "="
-              << kv.second.x << "," << kv.second.y << "\n";
-        }
     }
     rename(tmp.c_str(), p.c_str());
 }
