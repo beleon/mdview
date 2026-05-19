@@ -22,7 +22,11 @@
 
 namespace mdv {
 
-struct FileView { double scroll_x = 0, scroll_y = 0; double zoom = 1.0; };
+struct FileView {
+    double scroll_x = 0, scroll_y = 0;
+    double zoom      = 1.0;
+    int    font_size = 16;
+};
 
 struct State {
     int    window_width    = 900;
@@ -142,7 +146,8 @@ static inline State load_state() {
             FileView fv;
             fv.scroll_x = atof(parts[0].c_str());
             fv.scroll_y = atof(parts[1].c_str());
-            if (parts.size() >= 3) fv.zoom = atof(parts[2].c_str());
+            if (parts.size() >= 3) fv.zoom      = atof(parts[2].c_str());
+            if (parts.size() >= 4) fv.font_size = atoi(parts[3].c_str());
             s.files.push_back({h, fv});
             continue;
         }
@@ -182,7 +187,8 @@ static inline void save_state(const State &s) {
             f << "view:" << hash_hex(kv.first) << "="
               << kv.second.scroll_x << ","
               << kv.second.scroll_y << ","
-              << kv.second.zoom << "\n";
+              << kv.second.zoom     << ","
+              << kv.second.font_size << "\n";
         }
     }
     rename(tmp.c_str(), p.c_str());

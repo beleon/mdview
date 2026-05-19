@@ -53,7 +53,7 @@ static const Theme THEME_DARK = {
     "#3a3a3a"
 };
 
-static std::string md2html(const std::string &md, bool dark) {
+static std::string md2html(const std::string &md, bool dark, int font_size) {
     std::string body;
     auto cb = [](const MD_CHAR *t, MD_SIZE s, void *u) { static_cast<std::string*>(u)->append(t,s); };
     if (md_html(md.c_str(), (MD_SIZE)md.size(), cb, &body,
@@ -61,27 +61,45 @@ static std::string md2html(const std::string &md, bool dark) {
         body = "<p style=\"color:#c33\">Error parsing markdown</p>";
 
     const Theme &t = dark ? THEME_DARK : THEME_LIGHT;
-    char css[2048];
+    /* All text-related sizes (headings, code, margins, paddings) scale
+       proportionally with body font-size. We compute absolute px values
+       up front because litehtml's em/rem semantics differ subtly from
+       what we want (em on margins is relative to the element's own
+       font-size, not the body's — so plain em-based CSS would blow up
+       h1 margins). */
+    double sf = font_size / 16.0;
+    auto sc = [sf](int px) { return (int)(px * sf + 0.5); };
+
+    char css[2560];
     snprintf(css, sizeof(css),
-        "body{font-family:Sans;font-size:16px;line-height:1.6;color:%s;background:%s;padding:20px}"
-        "h1{font-size:32px;margin-top:24px;margin-bottom:12px;border-bottom:1px solid %s;padding-bottom:8px}"
-        "h2{font-size:26px;margin-top:20px;margin-bottom:10px;border-bottom:1px solid %s;padding-bottom:6px}"
-        "h3{font-size:22px;margin-top:16px;margin-bottom:8px}h4{font-size:18px;margin-top:14px;margin-bottom:6px}"
-        "p{margin-top:8px;margin-bottom:8px}"
-        "code{background-color:%s;padding:2px 4px;font-family:Monospace;font-size:14px}"
-        "pre{background-color:%s;padding:12px;font-family:Monospace;font-size:14px;border:1px solid %s}"
+        "body{font-family:Sans;font-size:%dpx;line-height:1.6;color:%s;background:%s;padding:%dpx}"
+        "h1{font-size:%dpx;margin-top:%dpx;margin-bottom:%dpx;border-bottom:1px solid %s;padding-bottom:%dpx}"
+        "h2{font-size:%dpx;margin-top:%dpx;margin-bottom:%dpx;border-bottom:1px solid %s;padding-bottom:%dpx}"
+        "h3{font-size:%dpx;margin-top:%dpx;margin-bottom:%dpx}"
+        "h4{font-size:%dpx;margin-top:%dpx;margin-bottom:%dpx}"
+        "p{margin-top:%dpx;margin-bottom:%dpx}"
+        "code{background-color:%s;padding:2px 4px;font-family:Monospace;font-size:%dpx}"
+        "pre{background-color:%s;padding:%dpx;font-family:Monospace;font-size:%dpx;border:1px solid %s}"
         "pre code{padding:0;background-color:transparent}"
-        "blockquote{margin-left:0;padding-left:16px;border-left:4px solid %s;color:%s}"
-        "a{color:%s}table{border-collapse:collapse;margin:12px 0}"
-        "th,td{border:1px solid %s;padding:8px}th{background-color:%s;font-weight:bold}"
-        "ul,ol{padding-left:24px}li{margin-bottom:4px}"
-        "hr{border:none;border-top:1px solid %s;margin:16px 0}"
+        "blockquote{margin-left:0;padding-left:%dpx;border-left:4px solid %s;color:%s}"
+        "a{color:%s}table{border-collapse:collapse;margin:%dpx 0}"
+        "th,td{border:1px solid %s;padding:%dpx}th{background-color:%s;font-weight:bold}"
+        "ul,ol{padding-left:%dpx}li{margin-bottom:%dpx}"
+        "hr{border:none;border-top:1px solid %s;margin:%dpx 0}"
         "del{text-decoration:line-through}img{max-width:100%%}",
-        t.body_color, t.body_bg,
-        t.h_border_strong, t.h_border_light,
-        t.code_bg, t.code_bg, t.code_border,
-        t.bq_border, t.bq_color,
-        t.link, t.border, t.th_bg, t.hr_border);
+        font_size, t.body_color, t.body_bg, sc(20),
+        sc(32), sc(24), sc(12), t.h_border_strong, sc(8),
+        sc(26), sc(20), sc(10), t.h_border_light, sc(6),
+        sc(22), sc(16), sc(8),
+        sc(18), sc(14), sc(6),
+        sc(8), sc(8),
+        t.code_bg, sc(14),
+        t.code_bg, sc(12), sc(14), t.code_border,
+        sc(16), t.bq_border, t.bq_color,
+        t.link, sc(12),
+        t.border, sc(8), t.th_bg,
+        sc(24), sc(4),
+        t.hr_border, sc(16));
     return std::string("<html><head><style>") + css + "</style></head><body>" + body + "</body></html>";
 }
 
@@ -178,6 +196,10 @@ static constexpr double SB_MIN = 20.0;
 static constexpr int    AUTOSCROLL_SPD = 8;
 static constexpr double KEY_SPD = 4.0, PAGE_SPD = 30.0;
 static constexpr double ZOOM_MIN = 1.0, ZOOM_MAX = 5.0, ZOOM_STEP = 0.1;
+static constexpr int    FONT_SIZE_DEFAULT = 16;
+static constexpr int    FONT_SIZE_MIN     = 8;
+static constexpr int    FONT_SIZE_MAX     = 48;
+static constexpr int    FONT_SIZE_STEP    = 1;
 static constexpr int    SEARCH_BAR_H = 36;
 static constexpr int    STATUS_H = 22;
 static constexpr int    SIDEBAR_W = 280;
@@ -196,6 +218,7 @@ struct App {
     int vp_w = 900, vp_h = 700;
     double zoom = 1.0;
     double pinch_base_zoom = 1.0;
+    int font_size = FONT_SIZE_DEFAULT;   /* body font-size in px; Ctrl+± adjust */
 
     bool sb_v_drag = false, sb_h_drag = false;
     double sb_drag_off = 0;
@@ -615,9 +638,9 @@ static void draw_help_overlay(App *a, cairo_t *cr, int ww, int hh) {
         "    Shift+Space / PgUp    Page up",
         "    g / Home              Top of document",
         "    G / End               Bottom of document",
-        "    Ctrl++ / Ctrl+=       Zoom in",
-        "    Ctrl+-                Zoom out",
-        "    Ctrl+0                Reset zoom",
+        "    Ctrl++ / Ctrl+=       Increase text size",
+        "    Ctrl+-                Decrease text size",
+        "    Ctrl+0                Reset text size + zoom",
         "    Ctrl+T                Toggle outline sidebar",
         "    Ctrl+D                Toggle dark mode",
         "    Ctrl+C                Copy selection",
@@ -848,6 +871,8 @@ static void draw_search_bar(App *a, cairo_t *cr, int ww) {
 static void toggle_dark_mode(App *a, mdv_window *w);
 static void toggle_toc(App *a, mdv_window *w);
 static void reload_file(void *ud);
+static void change_font_size(App *a, mdv_window *w, int delta);
+static void reset_view(App *a, mdv_window *w);
 
 static const int MENU_ITEM_H = 26;
 static const int MENU_PAD_V  = 4;
@@ -1498,9 +1523,11 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
         s.active = true; s.dragging = false; mdv_window_request_redraw(w); return;
     }
     if (mods & MDV_MOD_CTRL) {
-        if (ks == XKB_KEY_equal || ks == XKB_KEY_plus) { apply_zoom(a, a->zoom + ZOOM_STEP, a->mouse_x - toc_w(a), a->mouse_y); mdv_window_request_redraw(w); return; }
-        if (ks == XKB_KEY_minus) { apply_zoom(a, a->zoom - ZOOM_STEP, a->mouse_x - toc_w(a), a->mouse_y); mdv_window_request_redraw(w); return; }
-        if (ks == XKB_KEY_0)     { apply_zoom(a, 1.0, a->mouse_x - toc_w(a), a->mouse_y); mdv_window_request_redraw(w); return; }
+        /* Ctrl+± / Ctrl+0 adjust the body font-size (reflow). Trackpad pinch
+           and Ctrl+wheel still drive the scale-based zoom. Ctrl+0 resets both. */
+        if (ks == XKB_KEY_equal || ks == XKB_KEY_plus) { change_font_size(a, w,  FONT_SIZE_STEP); return; }
+        if (ks == XKB_KEY_minus)                       { change_font_size(a, w, -FONT_SIZE_STEP); return; }
+        if (ks == XKB_KEY_0)                           { reset_view(a, w); return; }
         if (ks == XKB_KEY_t)     { toggle_toc(a, w); return; }
         if (ks == XKB_KEY_d)     { toggle_dark_mode(a, w); return; }
     }
@@ -1563,28 +1590,67 @@ static void start_highlight(App *a, mdv_window *w) {
 }
 
 /* Re-render the document from cached source markdown using whichever theme
-   is currently active. Called from the dark-mode toggle (and indirectly
-   from reload, which has its own re-read flow). Preserves scroll. */
+   and font-size are currently active. Does NOT preserve scroll — callers do
+   that themselves (some need to keep it as-is, others need to translate it
+   through the new layout fraction-of-doc-style). */
 static void rerender_doc(App *a) {
     a->highlighter.stop();
     a->con.set_dark_mode(a->dark_mode);
-    a->html          = add_heading_ids(md2html(a->source_md, a->dark_mode));
+    a->html          = add_heading_ids(md2html(a->source_md, a->dark_mode, a->font_size));
     a->original_html = a->html;
     a->toc_entries   = extract_toc(a->original_html);
     clamp_toc_scroll(a);
-
-    double sx = a->scroll_x, sy = a->scroll_y;
     a->doc = litehtml::document::createFromString(a->html.c_str(), &a->con, litehtml::master_css);
     do_layout(a);
-    a->scroll_x = sx; a->scroll_y = sy; clamp(a);
     a->match_count_dirty = true;
 }
 
 static void toggle_dark_mode(App *a, mdv_window *w) {
     a->dark_mode = !a->dark_mode;
+    /* Theme change doesn't reflow, so the literal scroll position stays
+       valid — just save/restore around the rebuild. */
+    double sx = a->scroll_x, sy = a->scroll_y;
     rerender_doc(a);
+    a->scroll_x = sx; a->scroll_y = sy;
+    clamp(a);
     if (a->highlighter.tool() != mdv::HLTool::None) start_highlight(a, w);
     mdv_window_request_redraw(w);
+}
+
+/* Adjust the body font-size (and proportionally all related sizes) by
+   `delta` and re-render. Scroll position is preserved as a fraction of
+   total doc height/width so the user stays at roughly the same place in
+   the document despite the layout reflowing. */
+static void change_font_size(App *a, mdv_window *w, int delta) {
+    int new_size = a->font_size + delta;
+    if (new_size < FONT_SIZE_MIN) new_size = FONT_SIZE_MIN;
+    if (new_size > FONT_SIZE_MAX) new_size = FONT_SIZE_MAX;
+    if (new_size == a->font_size) return;
+
+    double full_h = a->doc_h * a->zoom;
+    double full_w = a->doc_w * a->zoom;
+    double frac_y = (full_h > 0) ? (a->scroll_y / full_h) : 0.0;
+    double frac_x = (full_w > 0) ? (a->scroll_x / full_w) : 0.0;
+
+    a->font_size = new_size;
+    rerender_doc(a);
+
+    a->scroll_x = frac_x * (a->doc_w * a->zoom);
+    a->scroll_y = frac_y * (a->doc_h * a->zoom);
+    clamp(a);
+    if (a->highlighter.tool() != mdv::HLTool::None) start_highlight(a, w);
+    mdv_window_request_redraw(w);
+}
+
+/* Ctrl+0 reset: text size AND pinch zoom both back to defaults. */
+static void reset_view(App *a, mdv_window *w) {
+    a->zoom = 1.0;
+    if (a->font_size != FONT_SIZE_DEFAULT) {
+        change_font_size(a, w, FONT_SIZE_DEFAULT - a->font_size);
+    } else {
+        clamp(a);
+        mdv_window_request_redraw(w);
+    }
 }
 
 static void toggle_toc(App *a, mdv_window *w) {
@@ -1613,7 +1679,13 @@ static void reload_file(void *ud) {
     if (new_md == a->source_md) return;  /* same content, no change */
     a->source_md = std::move(new_md);
 
+    /* File content changed but font-size hasn't, so the doc dims are most
+       likely similar; keep the literal scroll position and let clamp pull
+       it in if the new content is shorter. */
+    double sx = a->scroll_x, sy = a->scroll_y;
     rerender_doc(a);
+    a->scroll_x = sx; a->scroll_y = sy;
+    clamp(a);
     if (a->highlighter.tool() != mdv::HLTool::None) start_highlight(a, a->win);
 
     mdv_window_request_redraw(a->win);
@@ -1710,14 +1782,15 @@ int main(int argc, char **argv) {
     app.file_path = file;
     { auto sl = app.file_path.find_last_of('/');
       app.file_basename = (sl == std::string::npos) ? app.file_path : app.file_path.substr(sl + 1); }
-    /* Restore scroll + zoom if this file is in the LRU; otherwise the
-       App-struct defaults (zoom=1.0, scroll=0) stand. */
+    /* Restore scroll + zoom + font-size if this file is in the LRU;
+       otherwise the App-struct defaults stand. */
     double initial_zoom = 1.0;
     for (const auto &kv : persisted.files) {
         if (kv.first == path_hash) {
-            app.scroll_x = kv.second.scroll_x;
-            app.scroll_y = kv.second.scroll_y;
-            initial_zoom = kv.second.zoom;
+            app.scroll_x  = kv.second.scroll_x;
+            app.scroll_y  = kv.second.scroll_y;
+            initial_zoom  = kv.second.zoom;
+            app.font_size = std::clamp(kv.second.font_size, FONT_SIZE_MIN, FONT_SIZE_MAX);
             break;
         }
     }
@@ -1727,7 +1800,7 @@ int main(int argc, char **argv) {
     app.whole_word      = persisted.whole_word;
     app.regex_mode      = persisted.regex_mode;
     app.source_md       = ss.str();
-    app.html            = add_heading_ids(md2html(app.source_md, app.dark_mode));
+    app.html            = add_heading_ids(md2html(app.source_md, app.dark_mode, app.font_size));
     app.original_html   = app.html;
     app.toc_entries     = extract_toc(app.original_html);
     app.con.set_dark_mode(app.dark_mode);
@@ -1794,7 +1867,7 @@ int main(int argc, char **argv) {
     out.case_sensitive = app.case_sensitive;
     out.whole_word     = app.whole_word;
     out.regex_mode     = app.regex_mode;
-    mdv::files_touch(out, path_hash, { app.scroll_x, app.scroll_y, app.zoom });
+    mdv::files_touch(out, path_hash, { app.scroll_x, app.scroll_y, app.zoom, app.font_size });
     mdv::save_state(out);
 
     app.live_reloader.stop();

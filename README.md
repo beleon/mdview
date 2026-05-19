@@ -103,9 +103,9 @@ Produces `dist/mdview`. The binary is self-contained — `dist/mdview --install`
 | `Alt+W` | Toggle whole-word search (while find bar is open) |
 | `Alt+R` | Toggle regex search (while find bar is open) |
 | `Ctrl+Backspace` | Delete word in find bar |
-| `Ctrl++` / `Ctrl+=` | Zoom in |
-| `Ctrl+-` | Zoom out |
-| `Ctrl+0` | Reset zoom |
+| `Ctrl++` / `Ctrl+=` | Increase text size (reflows) |
+| `Ctrl+-` | Decrease text size (reflows) |
+| `Ctrl+0` | Reset text size + zoom |
 | `Ctrl+T` | Toggle outline (TOC) sidebar |
 | `Ctrl+D` | Toggle dark mode |
 | `F1` / `?` | Toggle help overlay |
