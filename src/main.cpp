@@ -1,3 +1,4 @@
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1699,6 +1700,13 @@ int main(int argc, char **argv) {
 
     mdv::State persisted = mdv::load_state();
 
+    /* Canonical path is what we key per-file state (scroll position) on,
+       so a symlink and its target share state. Fall back to the input
+       string if realpath fails (file doesn't exist? we'd have errored
+       earlier — but be defensive). */
+    std::string canonical_path = file;
+    { char buf[PATH_MAX]; if (realpath(file, buf)) canonical_path = buf; }
+
     App app;
     app.file_path = file;
     { auto sl = app.file_path.find_last_of('/');
@@ -1708,6 +1716,11 @@ int main(int argc, char **argv) {
     app.case_sensitive  = persisted.case_sensitive;
     app.whole_word      = persisted.whole_word;
     app.regex_mode      = persisted.regex_mode;
+    { auto it = persisted.scroll.find(canonical_path);
+      if (it != persisted.scroll.end()) {
+          app.scroll_x = it->second.x;
+          app.scroll_y = it->second.y;
+      } }
     app.source_md       = ss.str();
     app.html            = add_heading_ids(md2html(app.source_md, app.dark_mode));
     app.original_html   = app.html;
@@ -1766,15 +1779,18 @@ int main(int argc, char **argv) {
 
     mdv_window_run(w);
 
-    /* Snapshot state before tearing down. */
-    mdv::State out;
-    out.zoom           = app.zoom;
-    out.window_width   = mdv_window_surface_width(w);
-    out.window_height  = mdv_window_surface_height(w);
-    out.dark_mode      = app.dark_mode;
-    out.case_sensitive = app.case_sensitive;
-    out.whole_word     = app.whole_word;
-    out.regex_mode     = app.regex_mode;
+    /* Snapshot state before tearing down. Start from the loaded `persisted`
+       so the per-file scroll map carries forward other files' entries; just
+       overwrite the entry for the file we were viewing. */
+    mdv::State out         = persisted;
+    out.zoom               = app.zoom;
+    out.window_width       = mdv_window_surface_width(w);
+    out.window_height      = mdv_window_surface_height(w);
+    out.dark_mode          = app.dark_mode;
+    out.case_sensitive     = app.case_sensitive;
+    out.whole_word         = app.whole_word;
+    out.regex_mode         = app.regex_mode;
+    out.scroll[canonical_path] = { app.scroll_x, app.scroll_y };
     mdv::save_state(out);
 
     app.live_reloader.stop();
