@@ -780,8 +780,8 @@ static void draw_help_overlay(App *a, cairo_t *cr, int ww, int hh) {
         "      Alt+R               Toggle regex",
         "      Ctrl+Backspace      Delete word",
         "      Esc                 Close find",
-        "    F1 / ?                Toggle this help",
-        "    q / Esc               Quit",
+        "    F1 / ?                Toggle this help (Esc also closes)",
+        "    q                     Quit",
         "",
         "  Mouse",
         "    Wheel                 Scroll (sidebar scrolls outline)",
@@ -1893,7 +1893,8 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
     case XKB_KEY_Escape:
         if (a->menu.visible) { menu_close(a); mdv_window_request_redraw(w); return; }
         if (a->help_visible) { a->help_visible = false; mdv_window_request_redraw(w); return; }
-        mdv_window_quit(w); return;
+        /* Otherwise eat it — Esc only dismisses overlays, never the window. */
+        return;
     case XKB_KEY_q:                      mdv_window_quit(w); return;
     }
 }

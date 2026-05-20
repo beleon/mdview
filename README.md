@@ -109,7 +109,8 @@ Produces `dist/mdview`. The binary is self-contained — `dist/mdview --install`
 | `Ctrl+T` | Toggle outline (TOC) sidebar |
 | `Ctrl+D` | Toggle dark mode |
 | `F1` / `?` | Toggle help overlay |
-| `q` / `Escape` | Quit (Esc also closes help / find) |
+| `q` | Quit |
+| `Escape` | Close find / help / context menu (doesn't quit) |
 
 ### Mouse
 
