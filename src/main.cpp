@@ -242,6 +242,9 @@ struct App {
     bool whole_word = false;
     bool regex_mode = false;
     std::string search_query;
+    /* Insertion-point byte offset within search_query. Always lands on a UTF-8
+       codepoint boundary; the movement/edit helpers enforce that. */
+    int search_cursor = 0;
     std::vector<SearchHit> search_matches;
     int current_match = -1;
     bool match_count_dirty = true;  /* re-run find_matches on next render */
@@ -480,6 +483,7 @@ static bool ensure_match_visible(App *a) {
 static void close_search(App *a, mdv_window *w) {
     a->search_active = false;
     a->search_query.clear();
+    a->search_cursor = 0;
     a->search_matches.clear();
     a->current_match = -1;
     a->match_count_dirty = false;
@@ -489,6 +493,7 @@ static void close_search(App *a, mdv_window *w) {
 static void open_search(App *a, mdv_window *w) {
     a->search_active = true;
     a->search_query.clear();
+    a->search_cursor = 0;
     a->search_matches.clear();
     a->current_match = -1;
     a->match_count_dirty = false;
@@ -905,16 +910,24 @@ static void draw_search_bar(App *a, cairo_t *cr, int ww) {
     PangoFontDescription *fd = pango_font_description_from_string("Sans 13");
     pango_layout_set_font_description(l, fd);
 
-    /* "Find: <query>" with caret */
-    std::string text = "Find: " + a->search_query;
+    /* "Find: <query>" — draw label + query, then caret at cursor position
+       within the query. We position the caret by querying the laid-out
+       layout at the byte offset (label length + cursor offset). */
+    static const char LABEL[] = "Find: ";
+    std::string text = LABEL + a->search_query;
     pango_layout_set_text(l, text.c_str(), -1);
-    int tw_l = 0, th_l = 0;
-    pango_layout_get_pixel_size(l, &tw_l, &th_l);
+    int th_l = 0;
+    pango_layout_get_pixel_size(l, NULL, &th_l);
     cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
     double ty = (bh - th_l) / 2.0;
     cairo_move_to(cr, 12, ty);
     pango_cairo_show_layout(cr, l);
-    cairo_rectangle(cr, 12 + tw_l + 1, ty, 2, th_l);
+
+    int caret_byte = (int)(sizeof(LABEL) - 1) + a->search_cursor;
+    PangoRectangle caret_rect;
+    pango_layout_get_cursor_pos(l, caret_byte, &caret_rect, NULL);
+    double caret_x = 12 + (double)caret_rect.x / PANGO_SCALE;
+    cairo_rectangle(cr, caret_x, ty, 2, th_l);
     cairo_fill(cr);
 
     /* Match count / hint (or red error tag for an invalid regex) */
@@ -1576,22 +1589,50 @@ static void on_tick(mdv_window *w, void *ud) {
 static void start_ks(App *a, mdv_window *w, double v) { a->scroll_vel = v; a->key_scrolling = true; mdv_window_set_tick_enabled(w, true); }
 static void stop_ks(App *a, mdv_window *w) { a->scroll_vel = 0; a->key_scrolling = false; a->space_held = false; if (!tick_on(a)) mdv_window_set_tick_enabled(w, false); }
 
-/* Remove last UTF-8 codepoint from `s` */
-static void utf8_pop_back(std::string &s) {
-    if (s.empty()) return;
-    size_t i = s.size() - 1;
+/* UTF-8 codepoint boundary helpers for the find-bar text cursor. */
+static int utf8_prev_boundary(const std::string &s, int i) {
+    if (i <= 0) return 0;
+    i--;
     while (i > 0 && (((unsigned char)s[i]) & 0xC0) == 0x80) i--;
-    s.erase(i);
+    return i;
+}
+static int utf8_next_boundary(const std::string &s, int i) {
+    int n = (int)s.size();
+    if (i >= n) return n;
+    i++;
+    while (i < n && (((unsigned char)s[i]) & 0xC0) == 0x80) i++;
+    return i;
 }
 
-/* Ctrl+Backspace style word delete: skip trailing whitespace, then delete
-   back to the next whitespace boundary (or start of string). */
-static void delete_word_back(std::string &s) {
-    if (s.empty()) return;
-    size_t i = s.size();
+/* Delete the codepoint before the cursor and move cursor back to that
+   position. Returns true if anything was removed. */
+static bool field_backspace(std::string &s, int &cur) {
+    if (cur <= 0) return false;
+    int p = utf8_prev_boundary(s, cur);
+    s.erase((size_t)p, (size_t)(cur - p));
+    cur = p;
+    return true;
+}
+
+/* Delete the codepoint at the cursor (forward delete). */
+static bool field_delete(std::string &s, int &cur) {
+    if (cur >= (int)s.size()) return false;
+    int p = utf8_next_boundary(s, cur);
+    s.erase((size_t)cur, (size_t)(p - cur));
+    return true;
+}
+
+/* Ctrl+Backspace style word delete from cursor backwards: skip whitespace
+   immediately before the cursor, then delete back to the next whitespace
+   boundary (or start of string). */
+static bool field_delete_word_back(std::string &s, int &cur) {
+    if (cur <= 0) return false;
+    int i = cur;
     while (i > 0 && isspace((unsigned char)s[i - 1])) i--;
     while (i > 0 && !isspace((unsigned char)s[i - 1])) i--;
-    s.erase(i);
+    s.erase((size_t)i, (size_t)(cur - i));
+    cur = i;
+    return true;
 }
 
 static void navigate_match(App *a, mdv_window *w, bool backward) {
@@ -1616,9 +1657,10 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
             return;
         }
         if (ks == XKB_KEY_BackSpace) {
-            if (!a->search_query.empty()) {
-                if (mods & MDV_MOD_CTRL) delete_word_back(a->search_query);
-                else                     utf8_pop_back(a->search_query);
+            bool changed = (mods & MDV_MOD_CTRL)
+                ? field_delete_word_back(a->search_query, a->search_cursor)
+                : field_backspace        (a->search_query, a->search_cursor);
+            if (changed) {
                 a->match_count_dirty = true;
                 if (a->search_query.empty()) {
                     a->search_matches.clear();
@@ -1628,6 +1670,27 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
             }
             return;
         }
+        if (ks == XKB_KEY_Delete) {
+            if (field_delete(a->search_query, a->search_cursor)) {
+                a->match_count_dirty = true;
+                if (a->search_query.empty()) {
+                    a->search_matches.clear();
+                    a->current_match = -1;
+                }
+                mdv_window_request_redraw(w);
+            }
+            return;
+        }
+        if (ks == XKB_KEY_Left) {
+            a->search_cursor = utf8_prev_boundary(a->search_query, a->search_cursor);
+            mdv_window_request_redraw(w); return;
+        }
+        if (ks == XKB_KEY_Right) {
+            a->search_cursor = utf8_next_boundary(a->search_query, a->search_cursor);
+            mdv_window_request_redraw(w); return;
+        }
+        if (ks == XKB_KEY_Home) { a->search_cursor = 0; mdv_window_request_redraw(w); return; }
+        if (ks == XKB_KEY_End)  { a->search_cursor = (int)a->search_query.size(); mdv_window_request_redraw(w); return; }
         if (mods & MDV_MOD_ALT) {
             if      (ks == XKB_KEY_c) { a->case_sensitive = !a->case_sensitive; a->match_count_dirty = true; mdv_window_request_redraw(w); }
             else if (ks == XKB_KEY_w) { a->whole_word     = !a->whole_word;     a->match_count_dirty = true; mdv_window_request_redraw(w); }
@@ -1645,7 +1708,8 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
             if (n > 1) {
                 unsigned char c0 = (unsigned char)buf[0];
                 if (c0 >= 32 && c0 != 127) {
-                    a->search_query.append(buf, n - 1);
+                    a->search_query.insert((size_t)a->search_cursor, buf, n - 1);
+                    a->search_cursor += n - 1;
                     a->match_count_dirty = true;
                     mdv_window_request_redraw(w);
                 }
