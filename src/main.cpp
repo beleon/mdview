@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <signal.h>
+#include <time.h>
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 #include <linux/input-event-codes.h>
@@ -206,9 +207,10 @@ static constexpr int    STATUS_H = 22;
 static constexpr int    SIDEBAR_W = 280;
 static constexpr int    TOC_LINE_H = 22;
 static constexpr int    TOC_PAD_TOP = 10;
-static constexpr int    COPY_BTN_W = 52;
+static constexpr int    COPY_BTN_W = 60;
 static constexpr int    COPY_BTN_H = 22;
 static constexpr int    COPY_BTN_PAD = 6;
+static constexpr long   COPIED_FEEDBACK_MS = 1500;
 
 /* ========================================================================= */
 
@@ -272,10 +274,13 @@ struct App {
 
     /* Copy-button overlays on <pre> blocks. Positions are doc-space; the
        overlay is drawn in viewport space at constant size regardless of
-       zoom. Populated post-layout. */
+       zoom. Populated post-layout. After a successful copy, the button's
+       label flips to "Copied!" until COPIED_FEEDBACK_MS has elapsed. */
     struct CodeBlockHit { int x, y, w, h; std::string text; };
     std::vector<CodeBlockHit> code_blocks;
     int                       code_button_hover = -1;
+    int                       code_copied_idx   = -1;
+    struct timespec           code_copied_at    = {};
 
     /* Right-click context menu (drawn as an in-window overlay) */
     enum class MenuAction { OpenLink, CopyLink, Copy, SelectAll, Find, Reload, ToggleDark };
@@ -349,7 +354,9 @@ static void clamp(App *a) {
     else               a->scroll_y = std::clamp(a->scroll_y, 0.0, ch - a->vp_h);
 }
 
-static bool tick_on(App *a) { return a->key_scrolling || a->autoscroll_dir != 0; }
+static bool tick_on(App *a) {
+    return a->key_scrolling || a->autoscroll_dir != 0 || a->code_copied_idx >= 0;
+}
 
 /* Iterative DFS for <pre> elements, gathering their on-screen positions in
    document order. Doesn't descend into a <pre> (any <code> inside is part
@@ -669,13 +676,16 @@ static void draw_copy_buttons(App *a, cairo_t *cr) {
         cairo_rectangle(cr, bx + 0.5, by + 0.5, COPY_BTN_W - 1, COPY_BTN_H - 1);
         cairo_stroke(cr);
 
+        bool copied = (a->code_copied_idx == (int)i);
+        const char *label = copied ? "Copied!" : "Copy";
         PangoLayout *l = pango_cairo_create_layout(cr);
         pango_layout_set_font_description(l, fd);
-        pango_layout_set_text(l, "Copy", -1);
+        pango_layout_set_text(l, label, -1);
         int lw = 0, lh = 0;
         pango_layout_get_pixel_size(l, &lw, &lh);
-        if (hovered) cairo_set_source_rgb(cr, c.accent[0], c.accent[1], c.accent[2]);
-        else         cairo_set_source_rgb(cr, c.text[0],   c.text[1],   c.text[2]);
+        if (copied)       cairo_set_source_rgb(cr, c.accent[0], c.accent[1], c.accent[2]);
+        else if (hovered) cairo_set_source_rgb(cr, c.accent[0], c.accent[1], c.accent[2]);
+        else              cairo_set_source_rgb(cr, c.text[0],   c.text[1],   c.text[2]);
         cairo_move_to(cr, bx + (COPY_BTN_W - lw) / 2.0, by + (COPY_BTN_H - lh) / 2.0);
         pango_cairo_show_layout(cr, l);
         g_object_unref(l);
@@ -1388,6 +1398,10 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
     if (btn == BTN_LEFT && pr && a->code_button_hover >= 0
      && a->code_button_hover < (int)a->code_blocks.size()) {
         mdv_window_copy_to_clipboard(w, a->code_blocks[a->code_button_hover].text.c_str());
+        a->code_copied_idx = a->code_button_hover;
+        clock_gettime(CLOCK_MONOTONIC, &a->code_copied_at);
+        mdv_window_set_tick_enabled(w, true);
+        mdv_window_request_redraw(w);
         return;
     }
 
@@ -1545,6 +1559,16 @@ static void on_tick(mdv_window *w, void *ud) {
         dirty = true;
     }
     if (a->key_scrolling && a->scroll_vel != 0) { a->scroll_y += a->scroll_vel; clamp(a); dirty = true; }
+    /* Expire the "Copied!" label after COPIED_FEEDBACK_MS. */
+    if (a->code_copied_idx >= 0) {
+        struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+        long elapsed_ms = (now.tv_sec - a->code_copied_at.tv_sec) * 1000L
+                        + (now.tv_nsec - a->code_copied_at.tv_nsec) / 1000000L;
+        if (elapsed_ms >= COPIED_FEEDBACK_MS) {
+            a->code_copied_idx = -1;
+            dirty = true;
+        }
+    }
     if (!tick_on(a)) mdv_window_set_tick_enabled(w, false);
     if (dirty) mdv_window_request_redraw(w);
 }
