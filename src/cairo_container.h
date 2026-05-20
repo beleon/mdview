@@ -243,18 +243,17 @@ public:
             while(i<n&&std::abs((s[i]->y+s[i]->height/2)-ly)<=4){lg.min_top=std::min(lg.min_top,s[i]->y);lg.max_bot=std::max(lg.max_bot,s[i]->y+s[i]->height);i++;}
             lg.end=i;lines.push_back(lg);}return lines;}
     /* clip_left: where the selection visually STARTS on its first line.
+         - rx past the line's LEFTMOST text (i.e. in the left margin) →
+           clamp to that leftmost text. Extending the highlight into the
+           empty margin looks weird.
          - rx inside a span → snap to a character boundary.
-         - rx in an inter-span gap or in the line's left margin → return
-           rx itself, so the highlight begins at the click/cursor x. (No
-           clamping — if you click in a margin and drag right, the rect
-           starts at your click, not at the first word's left edge.)
-       clip_right: where the selection visually ENDS on its last line.
-         - rx inside a span → snap to a character boundary.
-         - rx in an inter-span gap → return rx.
-         - rx past the rightmost text on the line → clamp to that
-           rightmost text. Extending the highlight rectangle into the
-           empty right margin past the last word looked weird. */
+         - rx in an inter-span gap → return rx, so dragging from a click
+           between two words doesn't jump to the next word's edge.
+       clip_right: same idea, mirrored. */
     int clip_left(const std::vector<const TextSpan*>&s,const LineGroup&lg,int rx)const{
+        int lcy  = s[lg.start]->y + s[lg.start]->height / 2;
+        int left = line_bounds_left(lcy);
+        if (left != std::numeric_limits<int>::max() && rx < left) rx = left;
         for(int j=lg.start;j<lg.end;j++){
             if(rx>=s[j]->x&&rx<=s[j]->x+s[j]->width)return index_to_x(*s[j],x_to_index(*s[j],rx));
             if(rx<s[j]->x)return rx;
