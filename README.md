@@ -1,10 +1,33 @@
-# mdview
+<p align="center">
+  <img src="icons/mdview-256.png" width="128" alt="mdview app icon">
+</p>
 
-A lightweight Wayland-native Markdown viewer. No frameworks — raw `libwayland-client` + Cairo + Pango + litehtml + md4c.
+<h1 align="center">mdview</h1>
 
-Takes a single CLI argument — a path to a `.md` file — converts it to HTML via md4c, and renders it in a native Wayland window using litehtml's HTML/CSS engine with Cairo for 2D drawing and Pango for text.
+<p align="center">
+  <strong>A Wayland-native Markdown viewer.</strong><br>
+  No Electron. No GTK. No Qt. Just <code>libwayland-client</code> + Cairo + Pango + litehtml + md4c.
+</p>
 
-## Architecture
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <img src="https://img.shields.io/badge/platform-Wayland-ff9800" alt="Wayland">
+  <img src="https://img.shields.io/badge/C%2B%2B-17-00599C" alt="C++17">
+  <img src="https://img.shields.io/badge/deps-stock%20Wayland%20session-4CAF50" alt="Stock Wayland deps">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/hero.png" alt="mdview rendering a Markdown document" width="820">
+</p>
+
+---
+
+## Why mdview
+
+- **Native Wayland.** First-class `xdg-shell`, `wp_cursor_shape_v1`, `xdg-toplevel-icon-v1`, `pointer-gestures-unstable-v1`, `xdg-decoration-unstable-v1`. No XWayland fallback.
+- **Frameworkless.** No GTK, Qt, Electron, Tauri, or browser engine. The whole UI is direct Cairo draw calls onto a `wl_shm` buffer.
+- **Lightweight stack, surprisingly full app.** Find-in-doc (case / whole-word / regex), async syntax highlighting, dark mode, outline sidebar, live reload, right-click menu, persistent state, HiDPI rendering, pinch zoom, themed cursors, embedded app icon, self-installer — and it all fits in a small C++17 codebase.
+- **Drops into any modern Wayland desktop.** GNOME, KDE Plasma, Sway, Hyprland. Only links against libraries already loaded in every Wayland session.
 
 ```
   .md file ──▶ md4c (Markdown→HTML) ──▶ litehtml (HTML/CSS→layout) ──▶ Cairo+Pango (render)
@@ -15,62 +38,64 @@ Takes a single CLI argument — a path to a `.md` file — converts it to HTML v
                                                          (window, input, shared memory)
 ```
 
-**Lightweight stack, zero frameworks — and a lot fits in there:** find-in-doc with case / whole-word / regex, async syntax highlighting, dark mode, outline sidebar, live reload, right-click menu, persistent state, HiDPI rendering, pinch zoom, themed cursors, embedded app icon, self-installer.
+## Showcase
 
-## Features
+<table>
+  <tr>
+    <td align="center">
+      <img src="docs/screenshots/dark-mode.png" alt="Dark mode" width="380"><br>
+      <sub><b>Dark mode.</b> <code>Ctrl+D</code> toggles; syntax-highlight theme swaps too.</sub>
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/find.png" alt="Find bar" width="380"><br>
+      <sub><b>Find bar.</b> Case / whole-word / regex modes, full text-cursor editing.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/screenshots/outline.png" alt="Outline sidebar" width="380"><br>
+      <sub><b>Outline sidebar.</b> <code>Ctrl+T</code>. h1–h3, click to jump.</sub>
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/syntax.png" alt="Syntax-highlighted code blocks" width="380"><br>
+      <sub><b>Async syntax highlighting.</b> Off-thread <code>bat</code> / <code>pygmentize</code> / <code>highlight</code>.</sub>
+    </td>
+  </tr>
+</table>
 
-- Native Wayland window with server-side decoration negotiation (CSD fallback with title bar + close button)
-- Character-level text selection via mouse drag with Pango hit testing
-- Copy to clipboard via **Ctrl+C** (Wayland `wl_data_source`)
-- Select all via **Ctrl+A**
-- Find-in-document via **Ctrl+F** with match highlighting and navigation
-- Zoom via **Ctrl+wheel**, **Ctrl++ / Ctrl+- / Ctrl+0**, or trackpad pinch
-- Keyboard navigation (vim-style and standard)
-- Smooth scrolling via mouse wheel
-- Minimal scrollbar overlay
-- Full CSS layout via litehtml (headings, paragraphs, code blocks, tables, lists, blockquotes, horizontal rules)
-- Async syntax highlighting of code blocks via `bat` / `pygmentize` / `highlight` / `source-highlight` (whichever is installed); pass `--no-highlight` or set `MDVIEW_NO_HIGHLIGHT=1` to disable
-- Click links to open in your default browser (`xdg-open`), or in-document `#anchor` links to scroll to that heading
-- Live reload on file change (inotify); disable with `--no-reload`
-- Persistent state (zoom, window size, dark mode, search flags) between sessions (`~/.config/mdview/state`)
-- Help overlay with **F1** or **?**
-- Status bar showing filename, scroll %, zoom %, and highlight progress
-- Outline / TOC sidebar (Ctrl+T) listing h1-h3 headings; click to jump
-- Dark mode (Ctrl+D), persisted
-- Right-click context menu (Open Link / Copy Link URL / Copy / Select All / Find / Reload / Toggle Dark)
-- Whole-word and regex search modes (Alt+W / Alt+R) alongside case-sensitive (Alt+C)
-- HiDPI-aware rendering via `wl_surface.preferred_buffer_scale` (integer scales)
-- Detaches from the launching terminal (VS Code style); `-f` / `--foreground` keeps it attached
-- Themed cursors via `wp_cursor_shape_v1` (compositor draws the user's actual cursor theme); falls back to `wl_cursor_theme` on older compositors
-- App icon embedded in the binary and announced via `xdg_toplevel_icon_v1` on compositors that support it
-- Self-installer: `mdview --install` lays out the binary, icons, and `.desktop` entry under `~/.local/` (XDG-compliant); `--uninstall` reverses it
+## Build
 
-## Building
-
-### Prerequisites
-
-- CMake ≥ 3.16, C++17 compiler
-- `libwayland-dev libwayland-cursor0 wayland-protocols libxkbcommon-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf-2.0-dev librsvg2-dev`
-
-### Build
-
-```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-```
-
-### Build with Podman
+### Quick — Podman
 
 ```bash
 ./build.sh
 ```
 
-Produces `dist/mdview`. The binary is self-contained — `dist/mdview --install` lays out the binary, icons, and `.desktop` entry under `~/.local/`.
+Produces `dist/mdview`. The binary is self-contained — icons baked in, no runtime data files.
+
+### Or with system CMake
+
+```bash
+sudo apt install libwayland-dev libwayland-cursor0 wayland-protocols libxkbcommon-dev \
+                 libcairo2-dev libpango1.0-dev libgdk-pixbuf-2.0-dev librsvg2-dev
+cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+```
+
+Requires CMake ≥ 3.16 and a C++17 compiler.
+
+### Install
+
+```bash
+./mdview --install      # writes binary, icons, .desktop entry under ~/.local/
+./mdview --uninstall    # undoes the above
+```
+
+`--install` is XDG-compliant: binary lands in `~/.local/bin`, icons go under `~/.local/share/icons/hicolor/<size>/apps/`, the `.desktop` file under `~/.local/share/applications/`.
 
 ## Usage
 
 ```bash
-./mdview path/to/document.md
+mdview path/to/document.md
 ```
 
 ### Flags
@@ -84,6 +109,8 @@ Produces `dist/mdview`. The binary is self-contained — `dist/mdview --install`
 | `--uninstall` | Undo `--install` |
 | `-h` / `--help` | Show usage |
 
+Also: `MDVIEW_NO_HIGHLIGHT=1` env var to suppress syntax highlighting globally.
+
 ### Keyboard
 
 | Key | Action |
@@ -96,15 +123,13 @@ Produces `dist/mdview`. The binary is self-contained — `dist/mdview --install`
 | `G` / `End` | Bottom of document |
 | `Ctrl+C` | Copy selection to clipboard |
 | `Ctrl+A` | Select all text |
-| `Ctrl+F` | Open find bar (Esc to close) |
+| `Ctrl+F` | Open find bar |
 | `Enter` / `F3` | Next match (while find bar is open) |
 | `Shift+Enter` / `Shift+F3` | Previous match |
-| `Alt+C` | Toggle case-sensitive search (while find bar is open) |
-| `Alt+W` | Toggle whole-word search (while find bar is open) |
-| `Alt+R` | Toggle regex search (while find bar is open) |
-| `Ctrl+Backspace` | Delete word in find bar |
+| `Alt+C` / `Alt+W` / `Alt+R` | Toggle case-sensitive / whole-word / regex (in find bar) |
+| `Ctrl+Backspace` | Delete word (in find bar) |
 | `Ctrl++` / `Ctrl+=` | Increase text size (reflows) |
-| `Ctrl+-` | Decrease text size (reflows) |
+| `Ctrl+-` | Decrease text size |
 | `Ctrl+0` | Reset text size + zoom |
 | `Ctrl+T` | Toggle outline (TOC) sidebar |
 | `Ctrl+D` | Toggle dark mode |
@@ -114,30 +139,21 @@ Produces `dist/mdview`. The binary is self-contained — `dist/mdview --install`
 
 ### Mouse
 
-- **Scroll wheel** — scroll document
+- **Wheel** — scroll
 - **Shift+wheel** — horizontal scroll
-- **Ctrl+wheel** — zoom in / out
-- **Trackpad pinch** — zoom in / out (compositors that support `pointer-gestures-unstable-v1`)
-- **Click + drag** — select text
-- **Double-click** — select word (drag to extend by words)
-- **Triple-click** — select line (drag to extend by lines)
-- **Click on link** — open in browser, or scroll to in-doc anchor
+- **Ctrl+wheel** — zoom
+- **Pinch (touchpad)** — zoom
+- **Click + drag** — select text · **double-click** word · **triple-click** line
+- **Click on link** — open in browser, or scroll to `#anchor`
 - **Right-click** — context menu (Open Link / Copy / Select All / Find / Reload / Toggle Dark)
-- **Title bar drag** — move window (CSD mode)
-- **Title bar double-click** — toggle maximize (CSD mode)
+- **Title bar drag** — move window (CSD mode) · **double-click** to toggle maximize
 
 ## Configuration
 
 mdview keeps two files under `~/.config/mdview/`:
 
-- **`state`** — machine-managed. Per-file scroll / zoom / text-size LRU
-  (hashed paths, last 20 files), last window size, dark mode, search
-  flags. Rewritten on every close — don't edit by hand.
-- **`config`** — user-editable. Defaults for newly-opened files only;
-  the LRU always wins for files you've already adjusted. Optional —
-  if missing, built-in defaults apply.
-
-Recognised `config` keys:
+- **`state`** — machine-managed. Per-file scroll / zoom / text-size LRU (hashed paths, last 20 files), last window size, dark mode, search flags. Rewritten on every close — don't edit by hand.
+- **`config`** — user-editable. Defaults for newly-opened files only; the LRU always wins for files you've already adjusted. Optional — if missing, built-in defaults apply.
 
 ```ini
 # ~/.config/mdview/config
@@ -147,21 +163,23 @@ zoom      = 1.0   # pinch-zoom level, 1.0 = 100% (1.0..5.0)
 
 `#` comments and whitespace around `=` are tolerated.
 
-## Window Decorations
+## Window decorations
 
-mdview negotiates server-side decorations via the `xdg-decoration-unstable-v1` protocol. Compositors that support it (KDE Plasma, Sway, Hyprland, etc.) will draw their own title bar. If the compositor doesn't support the protocol or requests client-side decorations (e.g. GNOME/Mutter), mdview draws a minimal dark title bar with a close button.
+mdview negotiates server-side decorations via `xdg-decoration-unstable-v1`. Compositors that support it (KDE Plasma, Sway, Hyprland, …) draw their own title bar. If the compositor doesn't support the protocol or requests client-side decorations (e.g. GNOME/Mutter), mdview draws a minimal dark title bar with a close button.
 
 ## Runtime dependencies
 
 Only libraries already loaded in any Wayland session:
 
-- `libwayland-client.so`
-- `libwayland-cursor.so` (only loaded on compositors lacking `wp_cursor_shape_v1`)
-- `libxkbcommon.so`
-- `libcairo.so`
-- `libpangocairo-1.0.so` / `libpango-1.0.so`
-- `libgdk_pixbuf-2.0.so` (image loading)
-- `librsvg-2.0.so` (SVG rendering)
+| Library | Why |
+|---|---|
+| `libwayland-client.so` | Wayland protocol |
+| `libwayland-cursor.so` | Cursor theme — only loaded on compositors without `wp_cursor_shape_v1` |
+| `libxkbcommon.so` | Keyboard layout & keysyms |
+| `libcairo.so` | 2D rendering |
+| `libpangocairo-1.0.so` / `libpango-1.0.so` | Text shaping & layout |
+| `libgdk_pixbuf-2.0.so` | Image loading |
+| `librsvg-2.0.so` | SVG rendering |
 
 ## License
 
@@ -169,6 +187,8 @@ mdview is MIT-licensed — see [LICENSE](LICENSE).
 
 Bundled / linked dependencies:
 
-- litehtml: BSD-3-Clause
-- md4c: MIT
-- Cairo, Pango, Wayland: LGPL
+| Component | License |
+|---|---|
+| litehtml | BSD-3-Clause |
+| md4c | MIT |
+| Cairo, Pango, Wayland | LGPL |
