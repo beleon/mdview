@@ -41,6 +41,9 @@ int          mdv_window_surface_width(mdv_window *win); /* full wl_surface w */
 int          mdv_window_surface_height(mdv_window *win);/* full wl_surface h (incl. CSD title bar) */
 void         mdv_window_quit(mdv_window *win);
 void         mdv_window_copy_to_clipboard(mdv_window *win, const char *text);
+/* Blocking paste from the system clipboard. Returns malloc'd NUL-terminated
+   string (caller frees) or NULL if no text clipboard offer is present. */
+char        *mdv_window_paste_blocking(mdv_window *win);
 void         mdv_window_set_cursor(mdv_window *win, const char *name);
 void         mdv_window_set_tick_enabled(mdv_window *win, bool enabled);
 

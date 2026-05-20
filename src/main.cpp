@@ -245,6 +245,9 @@ struct App {
     /* Insertion-point byte offset within search_query. Always lands on a UTF-8
        codepoint boundary; the movement/edit helpers enforce that. */
     int search_cursor = 0;
+    /* Selection anchor; -1 means no active selection. When ≥ 0, the selection
+       is [min(anchor, cursor), max(anchor, cursor)). */
+    int search_anchor = -1;
     std::vector<SearchHit> search_matches;
     int current_match = -1;
     bool match_count_dirty = true;  /* re-run find_matches on next render */
@@ -484,6 +487,7 @@ static void close_search(App *a, mdv_window *w) {
     a->search_active = false;
     a->search_query.clear();
     a->search_cursor = 0;
+    a->search_anchor = -1;
     a->search_matches.clear();
     a->current_match = -1;
     a->match_count_dirty = false;
@@ -494,6 +498,7 @@ static void open_search(App *a, mdv_window *w) {
     a->search_active = true;
     a->search_query.clear();
     a->search_cursor = 0;
+    a->search_anchor = -1;
     a->search_matches.clear();
     a->current_match = -1;
     a->match_count_dirty = false;
@@ -897,6 +902,11 @@ static void open_external_url(const std::string &url) {
     waitpid(pid, NULL, 0);
 }
 
+/* Forward decl — full body lives further down with the rest of the
+   find-bar editing helpers, but draw_search_bar needs the selection
+   bounds to highlight them. */
+static void field_sel_range(int anchor, int cur, int *lo, int *hi);
+
 static void draw_search_bar(App *a, cairo_t *cr, int ww) {
     int bh = SEARCH_BAR_H;
     const Chrome &c = chrome(a);
@@ -910,22 +920,39 @@ static void draw_search_bar(App *a, cairo_t *cr, int ww) {
     PangoFontDescription *fd = pango_font_description_from_string("Sans 13");
     pango_layout_set_font_description(l, fd);
 
-    /* "Find: <query>" — draw label + query, then caret at cursor position
-       within the query. We position the caret by querying the laid-out
-       layout at the byte offset (label length + cursor offset). */
+    /* "Find: <query>" — draw selection highlight first (if any), then label +
+       query, then caret. Both selection and caret are positioned by querying
+       the laid-out layout at the byte offset (label length + field offset). */
     static const char LABEL[] = "Find: ";
     std::string text = LABEL + a->search_query;
     pango_layout_set_text(l, text.c_str(), -1);
     int th_l = 0;
     pango_layout_get_pixel_size(l, NULL, &th_l);
-    cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
     double ty = (bh - th_l) / 2.0;
+    const int LABEL_LEN = (int)(sizeof(LABEL) - 1);
+
+    if (a->search_anchor >= 0) {
+        int lo, hi;
+        field_sel_range(a->search_anchor, a->search_cursor, &lo, &hi);
+        if (hi > lo) {
+            PangoRectangle r_lo, r_hi;
+            pango_layout_get_cursor_pos(l, LABEL_LEN + lo, &r_lo, NULL);
+            pango_layout_get_cursor_pos(l, LABEL_LEN + hi, &r_hi, NULL);
+            double sx = 12 + (double)r_lo.x / PANGO_SCALE;
+            double ex = 12 + (double)r_hi.x / PANGO_SCALE;
+            cairo_set_source_rgba(cr, c.accent_bg[0], c.accent_bg[1],
+                                       c.accent_bg[2], c.accent_bg[3]);
+            cairo_rectangle(cr, sx, ty, ex - sx, th_l);
+            cairo_fill(cr);
+        }
+    }
+
+    cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
     cairo_move_to(cr, 12, ty);
     pango_cairo_show_layout(cr, l);
 
-    int caret_byte = (int)(sizeof(LABEL) - 1) + a->search_cursor;
     PangoRectangle caret_rect;
-    pango_layout_get_cursor_pos(l, caret_byte, &caret_rect, NULL);
+    pango_layout_get_cursor_pos(l, LABEL_LEN + a->search_cursor, &caret_rect, NULL);
     double caret_x = 12 + (double)caret_rect.x / PANGO_SCALE;
     cairo_rectangle(cr, caret_x, ty, 2, th_l);
     cairo_fill(cr);
@@ -1604,9 +1631,44 @@ static int utf8_next_boundary(const std::string &s, int i) {
     return i;
 }
 
+/* Selection accessors. When anchor < 0 the field has no selection and lo/hi
+   collapse to the cursor. */
+static void field_sel_range(int anchor, int cur, int *lo, int *hi) {
+    if (anchor < 0) { *lo = cur; *hi = cur; return; }
+    if (anchor <= cur) { *lo = anchor; *hi = cur; }
+    else               { *lo = cur;    *hi = anchor; }
+}
+
+/* If a selection exists, erase its range and collapse the cursor onto its
+   start. Always clears the anchor. Returns whether any bytes were removed. */
+static bool field_delete_sel(std::string &s, int &cur, int &anchor) {
+    if (anchor < 0) return false;
+    int lo, hi; field_sel_range(anchor, cur, &lo, &hi);
+    bool removed = (hi > lo);
+    if (removed) s.erase((size_t)lo, (size_t)(hi - lo));
+    cur = lo;
+    anchor = -1;
+    return removed;
+}
+
+/* Apply a movement: if shift is held we open or extend a selection (anchor
+   kept at the original position); otherwise the cursor collapses any existing
+   selection and moves freely. `new_cur` is where the cursor wants to land. */
+static void field_move_to(int &cur, int &anchor, int new_cur, bool shift) {
+    if (shift) {
+        if (anchor < 0) anchor = cur;
+        cur = new_cur;
+        if (anchor == cur) anchor = -1;
+    } else {
+        anchor = -1;
+        cur = new_cur;
+    }
+}
+
 /* Delete the codepoint before the cursor and move cursor back to that
    position. Returns true if anything was removed. */
-static bool field_backspace(std::string &s, int &cur) {
+static bool field_backspace(std::string &s, int &cur, int &anchor) {
+    if (field_delete_sel(s, cur, anchor)) return true;
     if (cur <= 0) return false;
     int p = utf8_prev_boundary(s, cur);
     s.erase((size_t)p, (size_t)(cur - p));
@@ -1615,17 +1677,19 @@ static bool field_backspace(std::string &s, int &cur) {
 }
 
 /* Delete the codepoint at the cursor (forward delete). */
-static bool field_delete(std::string &s, int &cur) {
+static bool field_delete(std::string &s, int &cur, int &anchor) {
+    if (field_delete_sel(s, cur, anchor)) return true;
     if (cur >= (int)s.size()) return false;
     int p = utf8_next_boundary(s, cur);
     s.erase((size_t)cur, (size_t)(p - cur));
     return true;
 }
 
-/* Ctrl+Backspace style word delete from cursor backwards: skip whitespace
-   immediately before the cursor, then delete back to the next whitespace
-   boundary (or start of string). */
-static bool field_delete_word_back(std::string &s, int &cur) {
+/* Ctrl+Backspace style word delete from cursor backwards: if there's a
+   selection, that's deleted instead. Otherwise skip whitespace immediately
+   before the cursor, then delete back to the next whitespace boundary. */
+static bool field_delete_word_back(std::string &s, int &cur, int &anchor) {
+    if (field_delete_sel(s, cur, anchor)) return true;
     if (cur <= 0) return false;
     int i = cur;
     while (i > 0 && isspace((unsigned char)s[i - 1])) i--;
@@ -1633,6 +1697,15 @@ static bool field_delete_word_back(std::string &s, int &cur) {
     s.erase((size_t)i, (size_t)(cur - i));
     cur = i;
     return true;
+}
+
+/* Insert raw bytes at the cursor, deleting any active selection first.
+   Caller is responsible for ensuring the bytes form valid UTF-8 starting at
+   the cursor (true for both typed input and clipboard text). */
+static void field_insert(std::string &s, int &cur, int &anchor, const char *data, int n) {
+    field_delete_sel(s, cur, anchor);
+    s.insert((size_t)cur, data, (size_t)n);
+    cur += n;
 }
 
 static void navigate_match(App *a, mdv_window *w, bool backward) {
@@ -1651,46 +1724,47 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
 
     /* ---- Search-mode key handling (only on key press) ---- */
     if (a->search_active && pr) {
+        bool shift = (mods & MDV_MOD_SHIFT) != 0;
+        std::string &q     = a->search_query;
+        int        &cur    = a->search_cursor;
+        int        &anchor = a->search_anchor;
+
+        /* `redirty` repaints + invalidates match count after a query mutation. */
+        auto redirty = [&]() {
+            a->match_count_dirty = true;
+            if (q.empty()) { a->search_matches.clear(); a->current_match = -1; }
+            mdv_window_request_redraw(w);
+        };
+        auto sel_text = [&]() -> std::string {
+            int lo, hi; field_sel_range(anchor, cur, &lo, &hi);
+            return q.substr((size_t)lo, (size_t)(hi - lo));
+        };
+
         if (ks == XKB_KEY_Escape) { close_search(a, w); return; }
         if (ks == XKB_KEY_Return || ks == XKB_KEY_KP_Enter) {
-            navigate_match(a, w, mods & MDV_MOD_SHIFT);
-            return;
+            navigate_match(a, w, shift); return;
         }
         if (ks == XKB_KEY_BackSpace) {
             bool changed = (mods & MDV_MOD_CTRL)
-                ? field_delete_word_back(a->search_query, a->search_cursor)
-                : field_backspace        (a->search_query, a->search_cursor);
-            if (changed) {
-                a->match_count_dirty = true;
-                if (a->search_query.empty()) {
-                    a->search_matches.clear();
-                    a->current_match = -1;
-                }
-                mdv_window_request_redraw(w);
-            }
+                ? field_delete_word_back(q, cur, anchor)
+                : field_backspace        (q, cur, anchor);
+            if (changed) redirty();
             return;
         }
         if (ks == XKB_KEY_Delete) {
-            if (field_delete(a->search_query, a->search_cursor)) {
-                a->match_count_dirty = true;
-                if (a->search_query.empty()) {
-                    a->search_matches.clear();
-                    a->current_match = -1;
-                }
-                mdv_window_request_redraw(w);
-            }
+            if (field_delete(q, cur, anchor)) redirty();
             return;
         }
         if (ks == XKB_KEY_Left) {
-            a->search_cursor = utf8_prev_boundary(a->search_query, a->search_cursor);
+            field_move_to(cur, anchor, utf8_prev_boundary(q, cur), shift);
             mdv_window_request_redraw(w); return;
         }
         if (ks == XKB_KEY_Right) {
-            a->search_cursor = utf8_next_boundary(a->search_query, a->search_cursor);
+            field_move_to(cur, anchor, utf8_next_boundary(q, cur), shift);
             mdv_window_request_redraw(w); return;
         }
-        if (ks == XKB_KEY_Home) { a->search_cursor = 0; mdv_window_request_redraw(w); return; }
-        if (ks == XKB_KEY_End)  { a->search_cursor = (int)a->search_query.size(); mdv_window_request_redraw(w); return; }
+        if (ks == XKB_KEY_Home) { field_move_to(cur, anchor, 0,              shift); mdv_window_request_redraw(w); return; }
+        if (ks == XKB_KEY_End)  { field_move_to(cur, anchor, (int)q.size(),  shift); mdv_window_request_redraw(w); return; }
         if (mods & MDV_MOD_ALT) {
             if      (ks == XKB_KEY_c) { a->case_sensitive = !a->case_sensitive; a->match_count_dirty = true; mdv_window_request_redraw(w); }
             else if (ks == XKB_KEY_w) { a->whole_word     = !a->whole_word;     a->match_count_dirty = true; mdv_window_request_redraw(w); }
@@ -1700,23 +1774,55 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
         }
         if (mods & MDV_MOD_CTRL) {
             if (ks == XKB_KEY_f) { close_search(a, w); return; }
-            /* Ctrl+C / Ctrl+A still operate on the document — fall through */
-        } else {
-            /* Try printable text */
-            char buf[8];
-            int n = xkb_keysym_to_utf8(ks, buf, sizeof(buf));
-            if (n > 1) {
-                unsigned char c0 = (unsigned char)buf[0];
-                if (c0 >= 32 && c0 != 127) {
-                    a->search_query.insert((size_t)a->search_cursor, buf, n - 1);
-                    a->search_cursor += n - 1;
-                    a->match_count_dirty = true;
-                    mdv_window_request_redraw(w);
-                }
+            if (ks == XKB_KEY_a) {
+                anchor = 0; cur = (int)q.size();
+                if (anchor == cur) anchor = -1;
+                mdv_window_request_redraw(w); return;
             }
-            /* Eat anything else (arrows, page nav, etc) while typing */
+            if (ks == XKB_KEY_c) {
+                std::string t = (anchor >= 0) ? sel_text() : q;
+                if (!t.empty()) mdv_window_copy_to_clipboard(w, t.c_str());
+                return;
+            }
+            if (ks == XKB_KEY_x) {
+                std::string t = (anchor >= 0) ? sel_text() : q;
+                if (t.empty()) return;
+                mdv_window_copy_to_clipboard(w, t.c_str());
+                if (anchor >= 0) field_delete_sel(q, cur, anchor);
+                else             { q.clear(); cur = 0; }
+                redirty(); return;
+            }
+            if (ks == XKB_KEY_v) {
+                char *txt = mdv_window_paste_blocking(w);
+                if (!txt) return;
+                /* Strip CR/LF — a multi-line paste into a find field never
+                   makes sense; treat embedded newlines as no-ops rather than
+                   silently corrupt the query. */
+                std::string clean;
+                clean.reserve(strlen(txt));
+                for (const char *p = txt; *p; p++) if (*p != '\r' && *p != '\n') clean += *p;
+                free(txt);
+                if (!clean.empty()) {
+                    field_insert(q, cur, anchor, clean.data(), (int)clean.size());
+                    redirty();
+                }
+                return;
+            }
+            /* Any other Ctrl combo — eat so it doesn't get typed as text. */
             return;
         }
+        /* Try printable text */
+        char buf[8];
+        int n = xkb_keysym_to_utf8(ks, buf, sizeof(buf));
+        if (n > 1) {
+            unsigned char c0 = (unsigned char)buf[0];
+            if (c0 >= 32 && c0 != 127) {
+                field_insert(q, cur, anchor, buf, n - 1);
+                redirty();
+            }
+        }
+        /* Eat anything else (arrows, page nav, etc) while typing */
+        return;
     }
 
     /* ---- Normal key handling ---- */

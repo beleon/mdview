@@ -67,6 +67,12 @@ struct mdv_window {
     struct wl_data_device_manager *data_device_manager;
     struct wl_data_device *data_device; struct wl_data_source *data_source;
     char *clipboard_text;
+    /* Incoming clipboard. The compositor pushes wl_data_offer events with a
+       per-offer mime list, then a `selection` event nominating one as the
+       current clipboard. We accumulate flags as mime types arrive, then
+       snapshot them onto cur_* when selection() fires. */
+    struct wl_data_offer *pending_offer;  bool pend_has_utf8, pend_has_text;
+    struct wl_data_offer *cur_offer;      bool cur_has_utf8,  cur_has_text;
     struct wl_pointer *pointer; struct wl_keyboard *keyboard;
     struct xkb_context *xkb_ctx; struct xkb_keymap *xkb_keymap; struct xkb_state *xkb_state;
     int mouse_x, mouse_y; uint32_t modifiers, last_serial;
@@ -318,6 +324,106 @@ static void dss(void *d,struct wl_data_source *s,const char *m,int32_t fd){
 }
 static void dsc(void *d,struct wl_data_source *s){mdv_window *w=d;if(w->data_source==s)w->data_source=NULL;wl_data_source_destroy(s);}
 static const struct wl_data_source_listener dsl={.target=dst,.send=dss,.cancelled=dsc};
+
+/* ---- Incoming clipboard ----------------------------------------------------
+   Compositor sequence per selection change:
+     wl_data_device.data_offer(new_offer)
+     wl_data_offer.offer(mime1), offer(mime2), ...
+     wl_data_device.selection(new_offer | NULL)
+   We mark mimes on either the pending or current slot depending on which one
+   the event's offer pointer matches. On selection() we promote pending → cur. */
+static bool mime_is_utf8(const char *m) {
+    return strcmp(m, "text/plain;charset=utf-8") == 0 || strcmp(m, "UTF8_STRING") == 0;
+}
+static bool mime_is_text(const char *m) {
+    return strcmp(m, "text/plain") == 0 || strcmp(m, "STRING") == 0 || strcmp(m, "TEXT") == 0;
+}
+static void doff_offer(void *d, struct wl_data_offer *o, const char *m) {
+    mdv_window *w = d;
+    bool *u8, *txt;
+    if      (o == w->pending_offer) { u8 = &w->pend_has_utf8; txt = &w->pend_has_text; }
+    else if (o == w->cur_offer)     { u8 = &w->cur_has_utf8;  txt = &w->cur_has_text;  }
+    else return;
+    if      (mime_is_utf8(m)) *u8  = true;
+    else if (mime_is_text(m)) *txt = true;
+}
+static void doff_src_actions(void *d, struct wl_data_offer *o, uint32_t a) { (void)d; (void)o; (void)a; }
+static void doff_action     (void *d, struct wl_data_offer *o, uint32_t a) { (void)d; (void)o; (void)a; }
+static const struct wl_data_offer_listener doff_l = {
+    .offer = doff_offer, .source_actions = doff_src_actions, .action = doff_action,
+};
+
+static void ddd_data_offer(void *d, struct wl_data_device *dev, struct wl_data_offer *o) {
+    (void)dev; mdv_window *w = d;
+    /* Shouldn't see a second data_offer before the previous one resolved into
+       a selection, but be defensive. */
+    if (w->pending_offer) { wl_data_offer_destroy(w->pending_offer); }
+    w->pending_offer  = o;
+    w->pend_has_utf8  = false;
+    w->pend_has_text  = false;
+    wl_data_offer_add_listener(o, &doff_l, w);
+}
+static void ddd_selection(void *d, struct wl_data_device *dev, struct wl_data_offer *o) {
+    (void)dev; mdv_window *w = d;
+    if (w->cur_offer && w->cur_offer != o) {
+        wl_data_offer_destroy(w->cur_offer);
+        w->cur_offer = NULL;
+    }
+    if (o && o == w->pending_offer) {
+        w->cur_offer       = o;
+        w->cur_has_utf8    = w->pend_has_utf8;
+        w->cur_has_text    = w->pend_has_text;
+        w->pending_offer   = NULL;
+        w->pend_has_utf8   = false;
+        w->pend_has_text   = false;
+    } else if (!o) {
+        if (w->pending_offer) { wl_data_offer_destroy(w->pending_offer); w->pending_offer = NULL; }
+    }
+}
+static void ddd_enter (void *d, struct wl_data_device *dev, uint32_t s, struct wl_surface *sf, wl_fixed_t x, wl_fixed_t y, struct wl_data_offer *o) { (void)d;(void)dev;(void)s;(void)sf;(void)x;(void)y;(void)o; }
+static void ddd_leave (void *d, struct wl_data_device *dev) { (void)d;(void)dev; }
+static void ddd_motion(void *d, struct wl_data_device *dev, uint32_t t, wl_fixed_t x, wl_fixed_t y) { (void)d;(void)dev;(void)t;(void)x;(void)y; }
+static void ddd_drop  (void *d, struct wl_data_device *dev) { (void)d;(void)dev; }
+static const struct wl_data_device_listener ddd_l = {
+    .data_offer = ddd_data_offer, .enter = ddd_enter, .leave = ddd_leave,
+    .motion = ddd_motion, .drop = ddd_drop, .selection = ddd_selection,
+};
+
+/* Blocking paste. Returns malloc'd NUL-terminated string (caller frees) or
+   NULL if no text clipboard is available or read failed. */
+char *mdv_window_paste_blocking(mdv_window *w) {
+    if (!w || !w->cur_offer) return NULL;
+    const char *mime = NULL;
+    if      (w->cur_has_utf8) mime = "text/plain;charset=utf-8";
+    else if (w->cur_has_text) mime = "text/plain";
+    else return NULL;
+    int fds[2];
+    if (pipe(fds) < 0) return NULL;
+    wl_data_offer_receive(w->cur_offer, mime, fds[1]);
+    close(fds[1]);
+    wl_display_flush(w->display);
+
+    char *buf = NULL; size_t cap = 0, len = 0;
+    char tmp[4096];
+    for (;;) {
+        ssize_t n = read(fds[0], tmp, sizeof(tmp));
+        if (n < 0) { if (errno == EINTR) continue; break; }
+        if (n == 0) break;
+        if (len + (size_t)n + 1 > cap) {
+            cap = (cap ? cap * 2 : 4096);
+            while (len + (size_t)n + 1 > cap) cap *= 2;
+            char *nb = realloc(buf, cap);
+            if (!nb) { free(buf); close(fds[0]); return NULL; }
+            buf = nb;
+        }
+        memcpy(buf + len, tmp, (size_t)n);
+        len += (size_t)n;
+    }
+    close(fds[0]);
+    if (!buf) return NULL;
+    buf[len] = 0;
+    return buf;
+}
 
 /* Key repeat */
 static void disarm_repeat(mdv_window *w) {
@@ -717,7 +823,10 @@ mdv_window *mdv_window_create(const char *title,int width,int height,const mdv_c
         zxdg_toplevel_decoration_v1_add_listener(w->toplevel_decoration,&dl,w);
         zxdg_toplevel_decoration_v1_set_mode(w->toplevel_decoration,ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
     }else w->use_csd=true;
-    if(w->data_device_manager&&w->seat)w->data_device=wl_data_device_manager_get_data_device(w->data_device_manager,w->seat);
+    if(w->data_device_manager&&w->seat){
+        w->data_device=wl_data_device_manager_get_data_device(w->data_device_manager,w->seat);
+        wl_data_device_add_listener(w->data_device,&ddd_l,w);
+    }
     /* Only load the wl_cursor_theme path if the compositor doesn't expose
        cursor-shape-v1 — when it does, the compositor draws cursors itself
        using the user's actual theme. Loading our own theme would just be
@@ -779,6 +888,8 @@ void mdv_window_destroy(mdv_window *w){
     if(w->repeat_timerfd>=0)close(w->repeat_timerfd);
     if(w->frame_cb)wl_callback_destroy(w->frame_cb);
     if(w->data_source)wl_data_source_destroy(w->data_source);
+    if(w->cur_offer)wl_data_offer_destroy(w->cur_offer);
+    if(w->pending_offer)wl_data_offer_destroy(w->pending_offer);
     if(w->data_device)wl_data_device_destroy(w->data_device);
     if(w->data_device_manager)wl_data_device_manager_destroy(w->data_device_manager);
     if(w->pinch_gesture)zwp_pointer_gesture_pinch_v1_destroy(w->pinch_gesture);
