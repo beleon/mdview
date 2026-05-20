@@ -241,6 +241,12 @@ struct App {
     bool case_sensitive = false;
     bool whole_word = false;
     bool regex_mode = false;
+    /* Find-bar mode toggle buttons. Rects populated by draw_search_bar each
+       paint (in window-space coords matching on_mouse_*) so mouse handlers
+       can hit-test. Index: 0=case, 1=whole_word, 2=regex. */
+    struct SearchToggleRect { int x, y, w, h; };
+    SearchToggleRect search_toggle_rects[3] = {};
+    int              search_toggle_hover    = -1;
     std::string search_query;
     /* Insertion-point byte offset within search_query. Always lands on a UTF-8
        codepoint boundary; the movement/edit helpers enforce that. */
@@ -655,6 +661,18 @@ static void copy_button_rect(App *a, const App::CodeBlockHit &cb,
     out_y = (int)((cb.y) * a->zoom - a->scroll_y) + COPY_BTN_PAD;
 }
 
+/* Returns 0/1/2 if (x,y) is over one of the find-bar mode toggles, or -1.
+   Only meaningful while search_active. */
+static int search_toggle_at(App *a, int x, int y) {
+    if (!a->search_active) return -1;
+    for (int i = 0; i < 3; i++) {
+        const auto &r = a->search_toggle_rects[i];
+        if (r.w == 0) continue;
+        if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return i;
+    }
+    return -1;
+}
+
 /* Returns the index of the code-block whose button is under (x,y) in
    viewport coords, or -1. */
 static int copy_button_at(App *a, int x, int y) {
@@ -1005,8 +1023,10 @@ static void draw_search_bar(App *a, cairo_t *cr, int ww) {
     pango_layout_get_pixel_size(l, &cnt_w, &cnt_h);
 
     /* Three search-mode toggles, drawn right-to-left from just before the
-       count: ".*" (regex), "Word" (whole word), "Aa" (case-sensitive). */
-    auto draw_toggle = [&](const char *label, bool on, int x_right_edge,
+       count: ".*" (regex), "Word" (whole word), "Aa" (case-sensitive).
+       `slot` indexes into a->search_toggle_rects so click handlers can
+       hit-test what the user sees. */
+    auto draw_toggle = [&](int slot, const char *label, bool on, int x_right_edge,
                            int *out_box_w) {
         PangoLayout *li = pango_cairo_create_layout(cr);
         PangoFontDescription *fdi = pango_font_description_from_string("Sans Bold 11");
@@ -1019,15 +1039,24 @@ static void draw_search_bar(App *a, cairo_t *cr, int ww) {
         int box_h_ = ih + box_pad_y * 2;
         int x_box  = x_right_edge - box_w_;
         double y_box = (bh - box_h_) / 2.0;
+        bool hovered = (a->search_toggle_hover == slot);
+        a->search_toggle_rects[slot] = { x_box, (int)y_box, box_w_, box_h_ };
         if (on) {
             cairo_set_source_rgba(cr, c.accent_bg[0], c.accent_bg[1], c.accent_bg[2], c.accent_bg[3]);
             cairo_rectangle(cr, x_box, y_box, box_w_, box_h_); cairo_fill(cr);
-            cairo_set_source_rgba(cr, c.accent[0], c.accent[1], c.accent[2], 0.7);
+            cairo_set_source_rgba(cr, c.accent[0], c.accent[1], c.accent[2], hovered ? 1.0 : 0.7);
             cairo_set_line_width(cr, 1.0);
             cairo_rectangle(cr, x_box + 0.5, y_box + 0.5, box_w_ - 1, box_h_ - 1); cairo_stroke(cr);
             cairo_set_source_rgb(cr, c.accent[0], c.accent[1], c.accent[2]);
         } else {
-            cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
+            if (hovered) {
+                /* Soft hover background so the user sees the button is hot. */
+                cairo_set_source_rgba(cr, c.text[0], c.text[1], c.text[2], 0.08);
+                cairo_rectangle(cr, x_box, y_box, box_w_, box_h_); cairo_fill(cr);
+                cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
+            } else {
+                cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
+            }
         }
         cairo_move_to(cr, x_box + box_pad_x, (bh - ih) / 2.0);
         pango_cairo_show_layout(cr, li);
@@ -1040,9 +1069,9 @@ static void draw_search_bar(App *a, cairo_t *cr, int ww) {
     int x_count = x_right - cnt_w;
     int x_cursor = x_count - 10;
     int tw_box;
-    draw_toggle(".*",   a->regex_mode,     x_cursor, &tw_box); x_cursor -= tw_box + 6;
-    draw_toggle("Word", a->whole_word,     x_cursor, &tw_box); x_cursor -= tw_box + 6;
-    draw_toggle("Aa",   a->case_sensitive, x_cursor, &tw_box);
+    draw_toggle(2, ".*",   a->regex_mode,     x_cursor, &tw_box); x_cursor -= tw_box + 6;
+    draw_toggle(1, "Word", a->whole_word,     x_cursor, &tw_box); x_cursor -= tw_box + 6;
+    draw_toggle(0, "Aa",   a->case_sensitive, x_cursor, &tw_box);
 
     if (regex_bad) cairo_set_source_rgb(cr, 0.80, 0.20, 0.20);
     else           cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
@@ -1429,6 +1458,15 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
                   || (sh.vis && y >= a->vp_h - SB_W && y < a->vp_h);
       bool over_search_bar = a->search_active && y < SEARCH_BAR_H;
       bool over_status_bar = y >= a->vp_h;
+      /* Search-bar mode-toggle hover: hit-test and refresh hover-index +
+         cursor. Done before the over_search_bar branch so a button gets the
+         pointer cursor instead of the default arrow. */
+      int new_st_hover = over_search_bar ? search_toggle_at(a, x, y) : -1;
+      if (new_st_hover != a->search_toggle_hover) {
+          a->search_toggle_hover = new_st_hover;
+          mdv_window_request_redraw(w);
+      }
+      if (new_st_hover >= 0) { mdv_window_set_cursor(w, "pointer"); return; }
       if (over_sb || over_search_bar || over_status_bar) {
           mdv_window_set_cursor(w, "default");
       } else {
@@ -1474,6 +1512,21 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
             mdv_window_request_redraw(w);
         }
         return;
+    }
+
+    /* Find-bar toggle click: flip the corresponding mode flag and re-run
+       the search. We check this before any document interaction so a click
+       inside the find bar can never fall through to the doc. */
+    if (btn == BTN_LEFT && pr && a->search_active && y < SEARCH_BAR_H) {
+        int slot = search_toggle_at(a, x, y);
+        if (slot >= 0) {
+            if      (slot == 0) a->case_sensitive = !a->case_sensitive;
+            else if (slot == 1) a->whole_word     = !a->whole_word;
+            else if (slot == 2) a->regex_mode     = !a->regex_mode;
+            a->match_count_dirty = true;
+            mdv_window_request_redraw(w);
+            return;
+        }
     }
 
     /* Copy-button click on a <pre> overlay. */
