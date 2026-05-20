@@ -206,6 +206,9 @@ static constexpr int    STATUS_H = 22;
 static constexpr int    SIDEBAR_W = 280;
 static constexpr int    TOC_LINE_H = 22;
 static constexpr int    TOC_PAD_TOP = 10;
+static constexpr int    COPY_BTN_W = 52;
+static constexpr int    COPY_BTN_H = 22;
+static constexpr int    COPY_BTN_PAD = 6;
 
 /* ========================================================================= */
 
@@ -266,6 +269,13 @@ struct App {
     std::vector<TocEntry> toc_entries;
     double                toc_scroll_y = 0;
     int                   toc_hover_idx = -1;
+
+    /* Copy-button overlays on <pre> blocks. Positions are doc-space; the
+       overlay is drawn in viewport space at constant size regardless of
+       zoom. Populated post-layout. */
+    struct CodeBlockHit { int x, y, w, h; std::string text; };
+    std::vector<CodeBlockHit> code_blocks;
+    int                       code_button_hover = -1;
 
     /* Right-click context menu (drawn as an in-window overlay) */
     enum class MenuAction { OpenLink, CopyLink, Copy, SelectAll, Find, Reload, ToggleDark };
@@ -341,6 +351,27 @@ static void clamp(App *a) {
 
 static bool tick_on(App *a) { return a->key_scrolling || a->autoscroll_dir != 0; }
 
+/* Iterative DFS for <pre> elements, gathering their on-screen positions in
+   document order. Doesn't descend into a <pre> (any <code> inside is part
+   of the block we're already capturing). */
+static void collect_pre_positions(litehtml::element::ptr root,
+                                  std::vector<litehtml::position> &out) {
+    if (!root) return;
+    std::vector<litehtml::element::ptr> stack;
+    stack.push_back(root);
+    while (!stack.empty()) {
+        auto el = stack.back(); stack.pop_back();
+        if (!el) continue;
+        const char *tag = el->get_tagName();
+        if (tag && strcmp(tag, "pre") == 0) {
+            out.push_back(el->get_placement());
+            continue;
+        }
+        const auto &kids = el->children();
+        for (auto it = kids.rbegin(); it != kids.rend(); ++it) stack.push_back(*it);
+    }
+}
+
 static void do_layout(App *a) {
     if (!a->doc) return;
     a->con.set_viewport(a->vp_w, a->vp_h);
@@ -348,6 +379,25 @@ static void do_layout(App *a) {
     a->doc_w = a->doc->width();
     a->doc_h = a->doc->height();
     a->match_count_dirty = true;  /* layout changed → positions invalid */
+    /* Re-collect code-block positions whenever layout changes — sources of
+       layout change include zoom, font-size, dark-mode reshade, live reload. */
+    {
+        std::vector<litehtml::position> positions;
+        collect_pre_positions(a->doc->root(), positions);
+        auto blocks = mdv::extract_code_blocks(a->original_html);
+        a->code_blocks.clear();
+        a->code_blocks.reserve(positions.size());
+        for (size_t i = 0; i < positions.size() && i < blocks.size(); i++) {
+            App::CodeBlockHit hit;
+            hit.x = positions[i].x;
+            hit.y = positions[i].y;
+            hit.w = positions[i].width;
+            hit.h = positions[i].height;
+            hit.text = blocks[i].raw_content;
+            a->code_blocks.push_back(std::move(hit));
+        }
+        a->code_button_hover = -1;
+    }
     clamp(a);
 }
 
@@ -575,6 +625,62 @@ static int toc_index_at(App *a, int x, int y) {
     int idx = (y - y0) / TOC_LINE_H;
     if (idx < 0 || idx >= (int)a->toc_entries.size()) return -1;
     return idx;
+}
+
+/* Convert a code block's top-right corner from doc coords to the
+   viewport-space rect of its copy button. The button sits just inside
+   the block's top-right padding. */
+static void copy_button_rect(App *a, const App::CodeBlockHit &cb,
+                             int &out_x, int &out_y) {
+    int tw = toc_w(a);
+    out_x = (int)((cb.x + cb.w) * a->zoom - a->scroll_x) + tw - COPY_BTN_W - COPY_BTN_PAD;
+    out_y = (int)((cb.y) * a->zoom - a->scroll_y) + COPY_BTN_PAD;
+}
+
+/* Returns the index of the code-block whose button is under (x,y) in
+   viewport coords, or -1. */
+static int copy_button_at(App *a, int x, int y) {
+    for (size_t i = 0; i < a->code_blocks.size(); i++) {
+        int bx, by;
+        copy_button_rect(a, a->code_blocks[i], bx, by);
+        if (x >= bx && x < bx + COPY_BTN_W
+         && y >= by && y < by + COPY_BTN_H) return (int)i;
+    }
+    return -1;
+}
+
+static void draw_copy_buttons(App *a, cairo_t *cr) {
+    int tw = toc_w(a);
+    const Chrome &c = chrome(a);
+    PangoFontDescription *fd = pango_font_description_from_string("Sans 10");
+    for (size_t i = 0; i < a->code_blocks.size(); i++) {
+        const auto &cb = a->code_blocks[i];
+        int bx, by;
+        copy_button_rect(a, cb, bx, by);
+        /* Skip entirely if outside the doc viewport. */
+        if (bx + COPY_BTN_W < tw || bx > tw + a->vp_w) continue;
+        if (by + COPY_BTN_H < 0 || by > a->vp_h - STATUS_H) continue;
+
+        bool hovered = (a->code_button_hover == (int)i);
+        cairo_set_source_rgba(cr, c.bg[0], c.bg[1], c.bg[2], hovered ? 1.0 : 0.85);
+        cairo_rectangle(cr, bx, by, COPY_BTN_W, COPY_BTN_H); cairo_fill(cr);
+        cairo_set_source_rgba(cr, c.sep[0], c.sep[1], c.sep[2], hovered ? 0.9 : 0.5);
+        cairo_set_line_width(cr, 1);
+        cairo_rectangle(cr, bx + 0.5, by + 0.5, COPY_BTN_W - 1, COPY_BTN_H - 1);
+        cairo_stroke(cr);
+
+        PangoLayout *l = pango_cairo_create_layout(cr);
+        pango_layout_set_font_description(l, fd);
+        pango_layout_set_text(l, "Copy", -1);
+        int lw = 0, lh = 0;
+        pango_layout_get_pixel_size(l, &lw, &lh);
+        if (hovered) cairo_set_source_rgb(cr, c.accent[0], c.accent[1], c.accent[2]);
+        else         cairo_set_source_rgb(cr, c.text[0],   c.text[1],   c.text[2]);
+        cairo_move_to(cr, bx + (COPY_BTN_W - lw) / 2.0, by + (COPY_BTN_H - lh) / 2.0);
+        pango_cairo_show_layout(cr, l);
+        g_object_unref(l);
+    }
+    pango_font_description_free(fd);
 }
 
 static void draw_status_bar(App *a, cairo_t *cr, int ww, int hh) {
@@ -1030,6 +1136,11 @@ static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
     a->con.draw_selection_overlay(cr);
     cairo_restore(cr);
 
+    /* Copy buttons over <pre> blocks. Drawn after the doc but before
+       scrollbars / sidebar so the buttons can be hovered through the
+       normal viewport input flow. */
+    draw_copy_buttons(a, cr);
+
     /* Vertical scrollbar */
     SBG sv = sbv(a);
     if (sv.vis) {
@@ -1201,6 +1312,20 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
         mdv_window_request_redraw(w); return;
     }
 
+    /* Copy-button hover. Skipped while actively drag-selecting so the
+       drag doesn't break when the cursor sweeps past a button. */
+    if (!a->con.selection().dragging) {
+        int new_hover = copy_button_at(a, x, y);
+        if (new_hover != a->code_button_hover) {
+            a->code_button_hover = new_hover;
+            mdv_window_request_redraw(w);
+        }
+        if (new_hover >= 0) {
+            mdv_window_set_cursor(w, "pointer");
+            return;
+        }
+    }
+
     /* Cursor: arrow over scrollbars/search bar/status bar. In the doc area
        use I-beam only over actual rendered text — blank margins, gaps
        between paragraphs, and image areas get the default arrow.
@@ -1256,6 +1381,13 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
             menu_close(a);
             mdv_window_request_redraw(w);
         }
+        return;
+    }
+
+    /* Copy-button click on a <pre> overlay. */
+    if (btn == BTN_LEFT && pr && a->code_button_hover >= 0
+     && a->code_button_hover < (int)a->code_blocks.size()) {
+        mdv_window_copy_to_clipboard(w, a->code_blocks[a->code_button_hover].text.c_str());
         return;
     }
 
