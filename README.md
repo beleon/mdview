@@ -152,7 +152,7 @@ Also: `MDVIEW_NO_HIGHLIGHT=1` env var to suppress syntax highlighting globally.
 | `Enter` / `F3` | Next match (while find bar is open) |
 | `Shift+Enter` / `Shift+F3` | Previous match |
 | `Alt+C` / `Alt+W` / `Alt+R` | Toggle case-sensitive / whole-word / regex (in find bar) |
-| `Ctrl+Backspace` | Delete word (in find bar) |
+| `Ctrl+Backspace` / `Ctrl+W` | Delete word (in find bar) |
 | `Ctrl++` / `Ctrl+=` | Increase text size (reflows) |
 | `Ctrl+-` | Decrease text size |
 | `Ctrl+0` | Reset text size + zoom |

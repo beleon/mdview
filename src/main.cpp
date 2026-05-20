@@ -779,7 +779,7 @@ static void draw_help_overlay(App *a, cairo_t *cr, int ww, int hh) {
         "      Alt+C               Toggle case-sensitive",
         "      Alt+W               Toggle whole-word",
         "      Alt+R               Toggle regex",
-        "      Ctrl+Backspace      Delete word",
+        "      Ctrl+Backspace / W  Delete word",
         "      Esc                 Close find",
         "    F1 / ?                Toggle this help (Esc also closes)",
         "    q                     Quit",
@@ -1833,6 +1833,13 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
                 if (anchor >= 0) field_delete_sel(q, cur, anchor);
                 else             { q.clear(); cur = 0; }
                 redirty(); return;
+            }
+            if (ks == XKB_KEY_w) {
+                /* Readline-style word-delete back from cursor. Same as
+                   Ctrl+Backspace; kept distinct because many shells bind
+                   Ctrl+W and the muscle memory is strong. */
+                if (field_delete_word_back(q, cur, anchor)) redirty();
+                return;
             }
             if (ks == XKB_KEY_v) {
                 char *txt = mdv_window_paste_blocking(w);
