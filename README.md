@@ -5,8 +5,8 @@
 <h1 align="center">mdview</h1>
 
 <p align="center">
-  <strong>A Wayland-native Markdown viewer.</strong><br>
-  No Electron. No GTK. No Qt. Just <code>libwayland-client</code> + Cairo + Pango + litehtml + md4c.
+  <strong>A quick-look Markdown viewer for the Wayland desktop.</strong><br>
+  Open a README without breaking flow — launches fast, doesn't pin your terminal, gets out of your way.
 </p>
 
 <p align="center">
@@ -24,10 +24,35 @@
 
 ## Why mdview
 
-- **Native Wayland.** First-class `xdg-shell`, `wp_cursor_shape_v1`, `xdg-toplevel-icon-v1`, `pointer-gestures-unstable-v1`, `xdg-decoration-unstable-v1`. No XWayland fallback.
-- **Frameworkless.** No GTK, Qt, Electron, Tauri, or browser engine. The whole UI is direct Cairo draw calls onto a `wl_shm` buffer.
-- **Lightweight stack, surprisingly full app.** Find-in-doc (case / whole-word / regex), async syntax highlighting, dark mode, outline sidebar, live reload, right-click menu, persistent state, HiDPI rendering, pinch zoom, themed cursors, embedded app icon, self-installer — and it all fits in a small C++17 codebase.
-- **Drops into any modern Wayland desktop.** GNOME, KDE Plasma, Sway, Hyprland. Only links against libraries already loaded in every Wayland session.
+Developers swim in `.md` files — READMEs, design notes, runbooks, the
+random `NOTES.md` in every project. You're in the terminal. You want to
+actually *read* one. The options aren't great:
+
+- **`less` / `vim`** — fine for skimming, but it's raw text. No heading
+  hierarchy, no tables, no anchors, no code-block highlighting.
+- **`pandoc` / `asciidoctor` → browser** — too many steps for a glance.
+  By the time you've set it up the moment's gone.
+- **Electron viewers** — slow to launch, heavy on memory, often tie up
+  the terminal you ran them from.
+
+mdview is the missing middle. It opens in milliseconds, **detaches from
+the launching shell** so your terminal is free, and gives you a real
+renderer with syntax-highlighted code, an outline sidebar, live reload,
+dark mode, and a proper find bar. Run it side-by-side with your terminal;
+treat it like `less` for `.md` files.
+
+The cost is low enough that you'll actually use it.
+
+## Built tiny on purpose
+
+- **Native Wayland.** First-class `xdg-shell`, `wp_cursor_shape_v1`,
+  `xdg-toplevel-icon-v1`, `pointer-gestures-unstable-v1`,
+  `xdg-decoration-unstable-v1`. No XWayland fallback.
+- **Frameworkless.** No GTK, Qt, Electron, Tauri, or browser engine.
+  The whole UI is direct Cairo draw calls onto a `wl_shm` buffer.
+- **Drops into any modern Wayland desktop.** GNOME, KDE Plasma, Sway,
+  Hyprland. Only links against libraries already loaded in every Wayland
+  session.
 
 ```
   .md file ──▶ md4c (Markdown→HTML) ──▶ litehtml (HTML/CSS→layout) ──▶ Cairo+Pango (render)
