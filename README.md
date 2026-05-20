@@ -15,7 +15,7 @@ Takes a single CLI argument — a path to a `.md` file — converts it to HTML v
                                                          (window, input, shared memory)
 ```
 
-**< 5k lines of our code, zero frameworks — and a lot fits in there:** find-in-doc with case / whole-word / regex, async syntax highlighting, dark mode, outline sidebar, live reload, right-click menu, persistent state, HiDPI rendering, pinch zoom, themed cursors, embedded app icon, self-installer.
+**Lightweight stack, zero frameworks — and a lot fits in there:** find-in-doc with case / whole-word / regex, async syntax highlighting, dark mode, outline sidebar, live reload, right-click menu, persistent state, HiDPI rendering, pinch zoom, themed cursors, embedded app icon, self-installer.
 
 ## Features
 
