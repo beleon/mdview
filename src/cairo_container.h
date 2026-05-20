@@ -231,17 +231,19 @@ public:
         while(i<n){int ly=s[i]->y+s[i]->height/2;LineGroup lg;lg.start=i;lg.min_top=s[i]->y;lg.max_bot=s[i]->y+s[i]->height;i++;
             while(i<n&&std::abs((s[i]->y+s[i]->height/2)-ly)<=4){lg.min_top=std::min(lg.min_top,s[i]->y);lg.max_bot=std::max(lg.max_bot,s[i]->y+s[i]->height);i++;}
             lg.end=i;lines.push_back(lg);}return lines;}
-    /* When rx falls inside a span, snap to the character boundary there.
-       When rx is in an INTER-SPAN gap on the line, return rx so the
-       highlight starts at the click/cursor position rather than jumping
-       to the next word's edge. When rx is BEYOND the line's leftmost /
-       rightmost text (i.e. in the line's left or right margin), clamp
-       to the line's actual text bounds — extending the highlight into
-       empty margin looks weird. */
+    /* clip_left: where the selection visually STARTS on its first line.
+         - rx inside a span → snap to a character boundary.
+         - rx in an inter-span gap or in the line's left margin → return
+           rx itself, so the highlight begins at the click/cursor x. (No
+           clamping — if you click in a margin and drag right, the rect
+           starts at your click, not at the first word's left edge.)
+       clip_right: where the selection visually ENDS on its last line.
+         - rx inside a span → snap to a character boundary.
+         - rx in an inter-span gap → return rx.
+         - rx past the rightmost text on the line → clamp to that
+           rightmost text. Extending the highlight rectangle into the
+           empty right margin past the last word looked weird. */
     int clip_left(const std::vector<const TextSpan*>&s,const LineGroup&lg,int rx)const{
-        int lcy   = s[lg.start]->y + s[lg.start]->height / 2;
-        int left  = line_bounds_left(lcy);
-        if (left != std::numeric_limits<int>::max() && rx < left) rx = left;
         for(int j=lg.start;j<lg.end;j++){
             if(rx>=s[j]->x&&rx<=s[j]->x+s[j]->width)return index_to_x(*s[j],x_to_index(*s[j],rx));
             if(rx<s[j]->x)return rx;
