@@ -1120,14 +1120,6 @@ static void extend_selection_drag(App *a, int doc_x, int doc_y) {
            the cursor actually entered. */
         sel.extent_y = a->con.snap_y_to_line(doc_y, sel.anchor_y);
         sel.active = true;
-        if (getenv("MDVIEW_DEBUG")) {
-            static int last_x = INT_MIN, last_y = INT_MIN;
-            if (doc_x != last_x || doc_y != last_y) {
-                fprintf(stderr, "mdview/sel: drag raw=(%d,%d) anchor_y=%d → extent_y=%d\n",
-                        doc_x, doc_y, sel.anchor_y, sel.extent_y);
-                last_x = doc_x; last_y = doc_y;
-            }
-        }
         return;
     }
     TextRange curr = (sel.granularity == Selection::GRAN_WORD)
@@ -1354,8 +1346,6 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
                nominally still on line A. Snapping at storage keeps the
                anchor y firmly on its line. */
             int dy_snap = a->con.snap_y_to_line(dy);
-            if (getenv("MDVIEW_DEBUG"))
-                fprintf(stderr, "mdview/sel: click raw=(%d,%d) → anchor=(%d,%d)\n", dx, dy, dx, dy_snap);
             if ((mods & MDV_MOD_SHIFT) && sel.active) { sel.extent_x = dx; sel.extent_y = dy_snap; sel.dragging = true; }
             else { sel.anchor_x = dx; sel.anchor_y = dy_snap; sel.extent_x = dx; sel.extent_y = dy_snap; sel.dragging = true; sel.active = false; }
             mdv_window_request_redraw(w);
