@@ -173,7 +173,7 @@ public:
        used by extend_selection_drag with bias_y = anchor's y so a few
        pixels of vertical wobble during a horizontal drag don't kick the
        extent to a neighbouring line. */
-    static constexpr int SNAP_BIAS_PX = 12;
+    static constexpr int SNAP_BIAS_PX = 18;
     int snap_y_to_line(int y, int bias_y = std::numeric_limits<int>::min()) const {
         if (spans_.empty()) return y;
         if (bias_y != std::numeric_limits<int>::min()
@@ -223,6 +223,18 @@ public:
         int raw_sy = sy, raw_ey = ey;
         sy = snap_y_to_line(sy);
         ey = snap_y_to_line(ey);
+        /* In docs with mixed inline styles, what's visually one line can
+           contain spans whose cys differ by a few pixels (different font
+           baselines). After snap, sy and ey may land on two of those
+           near-cys even though both endpoints are on the same logical
+           line. Treat anything within 6px as same-line, and re-sort the
+           x's — otherwise the get_ordered swap (which used the raw,
+           pre-snap y's) leaves sx > ex and span_in's same-line-both-
+           partial branch finds nothing. */
+        if (std::abs(sy - ey) <= 6) {
+            sy = ey;
+            if (sx > ex) std::swap(sx, ex);
+        }
         if (getenv("MDVIEW_DEBUG")) {
             static int lsx=INT_MIN, lsy=0, lex=0, ley=0;
             if (sx!=lsx || sy!=lsy || ex!=lex || ey!=ley) {
