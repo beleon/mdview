@@ -269,6 +269,11 @@ struct App {
     bool   help_visible   = false;
     double help_scroll_y  = 0;  /* px; clamped on each draw */
 
+    /* CLI flags stashed for the deferred-init path. The highlighter probe
+       and inotify watcher are kicked off in on_first_frame, not before. */
+    bool   arg_no_highlight = false;
+    bool   arg_no_reload    = false;
+
     /* File + live reload */
     std::string file_path;
     std::string file_basename;
@@ -2139,7 +2144,12 @@ static void toggle_toc(App *a, mdv_window *w) {
 }
 
 static void on_first_frame(mdv_window *w, void *ud) {
-    start_highlight((App*)ud, w);
+    App *a = (App*)ud;
+    /* Deferred from main(): both are cheap but reading $PATH and registering
+       an inotify watch shouldn't sit on the first-paint critical path. */
+    a->highlighter.set_tool(mdv::detect_tool(a->arg_no_highlight));
+    if (!a->arg_no_reload) a->live_reloader.start(w, a->file_path, reload_file, a);
+    start_highlight(a, w);
 }
 
 /* Re-read the source file from disk and rebuild everything. Called by
@@ -2286,7 +2296,14 @@ int main(int argc, char **argv) {
       app.con.set_base_dir(sl != std::string::npos ? app.file_path.substr(0, sl) : "."); }
     app.doc = litehtml::document::createFromString(app.html.c_str(), &app.con, litehtml::master_css);
 
-    app.highlighter.set_tool(mdv::detect_tool(no_highlight));
+    /* Highlighter PATH probe + set_tool are deferred to on_first_frame, so
+       the cost of scanning $PATH for bat/pygmentize/etc. doesn't sit
+       between exec and the window appearing. dark-mode flag is still set
+       eagerly so any other read of highlighter state sees a consistent
+       value. The tool will be set to None until first paint, which is
+       fine — start_highlight is only called after first paint anyway. */
+    app.arg_no_highlight = no_highlight;
+    app.arg_no_reload    = no_reload;
     app.highlighter.set_dark(app.dark_mode);
 
     /* Anchor clicks: # → in-doc scroll; everything else → xdg-open. */
@@ -2331,8 +2348,9 @@ int main(int argc, char **argv) {
        first layout uses the right dimensions. */
     on_resize(w, mdv_window_width(w), mdv_window_height(w), &app);
 
+    /* on_first_frame fires the deferred-init work: highlighter PATH probe,
+       inotify watcher, and the initial syntax-highlight pass. */
     mdv_window_set_after_init(w, on_first_frame, &app);
-    if (!no_reload) app.live_reloader.start(w, app.file_path, reload_file, &app);
 
     mdv_window_run(w);
 

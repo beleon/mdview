@@ -482,9 +482,11 @@ static int update_click_count(mdv_window *w) {
 }
 
 /* Pointer */
+static void lazy_load_cursor_theme(mdv_window *w);  /* defined below */
 static void pe(void *d,struct wl_pointer *p,uint32_t sr,struct wl_surface *sf,wl_fixed_t sx,wl_fixed_t sy){
     (void)p;(void)sf;mdv_window *w=d;w->mouse_x=wl_fixed_to_int(sx);w->mouse_y=wl_fixed_to_int(sy);
     w->last_serial=sr;w->last_enter_serial=sr;
+    lazy_load_cursor_theme(w);
     apply_cursor_kind(w,w->cursor_current);
     int tb=tb_h(w);if(w->cb.on_pointer_enter&&w->mouse_y>=tb)w->cb.on_pointer_enter(w,w->mouse_x,w->mouse_y-tb,w->cb.userdata);
 }
@@ -716,6 +718,41 @@ static void try_get_cursor_shape_device(mdv_window *w) {
         w->cursor_shape_manager, w->pointer);
 }
 
+/* Load wl_cursor_theme + populate the cursor_table lazily. Only does work on
+   compositors that don't expose wp_cursor_shape_v1, and only the first time
+   the pointer enters our surface. Idempotent. Reading the theme files off
+   disk can take 10-30ms on a cold page cache, which is why this isn't done
+   during mdv_window_create. */
+static void lazy_load_cursor_theme(mdv_window *w) {
+    if (!w || w->cursor_shape_manager) return;          /* shape protocol wins */
+    if (w->cursor_theme || w->cursor_surface) return;   /* already loaded */
+    const char *theme_name = getenv("XCURSOR_THEME");
+    int cursor_size = 24;
+    const char *size_env = getenv("XCURSOR_SIZE");
+    if (size_env) { int sz = atoi(size_env); if (sz > 0) cursor_size = sz; }
+    w->cursor_theme = wl_cursor_theme_load(theme_name, cursor_size, w->shm);
+    if (!w->cursor_theme) return;
+    w->cursor_surface = wl_compositor_create_surface(w->compositor);
+    struct wl_cursor_theme *t = w->cursor_theme;
+    #define LOAD(slot, ...) do { \
+        const char *names[] = { __VA_ARGS__, NULL }; \
+        for (const char **n = names; *n; n++) { \
+            w->cursor_table[slot] = wl_cursor_theme_get_cursor(t, *n); \
+            if (w->cursor_table[slot]) break; \
+        } \
+    } while (0)
+    LOAD(MDV_CURSOR_DEFAULT,   "default", "left_ptr");
+    LOAD(MDV_CURSOR_TEXT,      "text", "xterm", "ibeam");
+    LOAD(MDV_CURSOR_POINTER,   "pointer", "hand1", "hand2");
+    LOAD(MDV_CURSOR_NW_RESIZE, "nw_corner", "top_left_corner", "nw-resize");
+    LOAD(MDV_CURSOR_NE_RESIZE, "ne_corner", "top_right_corner", "ne-resize");
+    LOAD(MDV_CURSOR_SW_RESIZE, "sw_corner", "bottom_left_corner", "sw-resize");
+    LOAD(MDV_CURSOR_SE_RESIZE, "se_corner", "bottom_right_corner", "se-resize");
+    LOAD(MDV_CURSOR_NS_RESIZE, "ns-resize", "sb_v_double_arrow");
+    LOAD(MDV_CURSOR_EW_RESIZE, "ew-resize", "sb_h_double_arrow");
+    #undef LOAD
+}
+
 /* Seat */
 static void sc(void *d,struct wl_seat *s,uint32_t c){
     mdv_window *w=d;
@@ -813,6 +850,10 @@ static void fd_done(void *d,struct wl_callback *cb,uint32_t t){
     (void)t;mdv_window *w=d;wl_callback_destroy(cb);w->frame_cb=NULL;
     if (!w->first_frame_done) {
         w->first_frame_done = true;
+        /* Deferred startup work that didn't need to block first paint:
+           the embedded app icon is decoded + attached here so the taskbar
+           updates a frame after the window is on screen. */
+        setup_toplevel_icon(w);
         if (w->after_init_cb) w->after_init_cb(w, w->after_init_ud);
     }
     if(w->needs_redraw)rf(w);
@@ -841,7 +882,9 @@ mdv_window *mdv_window_create(const char *title,int width,int height,const mdv_c
     w->xdg_toplevel=xdg_surface_get_toplevel(w->xdg_surface);
     xdg_toplevel_add_listener(w->xdg_toplevel,&xtl,w);
     xdg_toplevel_set_title(w->xdg_toplevel,w->title);xdg_toplevel_set_app_id(w->xdg_toplevel,"mdview");
-    setup_toplevel_icon(w);
+    /* setup_toplevel_icon is deferred to after the first frame (see fd_done):
+       decoding 8 embedded PNGs via cairo takes a few ms and isn't needed for
+       the window to appear. The icon updates in the taskbar a frame later. */
     if(w->decoration_manager){
         w->toplevel_decoration=zxdg_decoration_manager_v1_get_toplevel_decoration(w->decoration_manager,w->xdg_toplevel);
         zxdg_toplevel_decoration_v1_add_listener(w->toplevel_decoration,&dl,w);
@@ -851,38 +894,9 @@ mdv_window *mdv_window_create(const char *title,int width,int height,const mdv_c
         w->data_device=wl_data_device_manager_get_data_device(w->data_device_manager,w->seat);
         wl_data_device_add_listener(w->data_device,&ddd_l,w);
     }
-    /* Only load the wl_cursor_theme path if the compositor doesn't expose
-       cursor-shape-v1. When it does, the compositor draws cursors itself
-       using the user's actual theme. Loading our own theme would just be
-       a wasted-memory fallback we'd never use. */
-    if (!w->cursor_shape_manager) {
-        const char *theme_name = getenv("XCURSOR_THEME");
-        int cursor_size = 24;
-        const char *size_env = getenv("XCURSOR_SIZE");
-        if (size_env) { int sz = atoi(size_env); if (sz > 0) cursor_size = sz; }
-        w->cursor_theme = wl_cursor_theme_load(theme_name, cursor_size, w->shm);
-        if (w->cursor_theme) {
-            w->cursor_surface = wl_compositor_create_surface(w->compositor);
-            struct wl_cursor_theme *t = w->cursor_theme;
-            #define LOAD(slot, ...) do { \
-                const char *names[] = { __VA_ARGS__, NULL }; \
-                for (const char **n = names; *n; n++) { \
-                    w->cursor_table[slot] = wl_cursor_theme_get_cursor(t, *n); \
-                    if (w->cursor_table[slot]) break; \
-                } \
-            } while (0)
-            LOAD(MDV_CURSOR_DEFAULT,   "default", "left_ptr");
-            LOAD(MDV_CURSOR_TEXT,      "text", "xterm", "ibeam");
-            LOAD(MDV_CURSOR_POINTER,   "pointer", "hand1", "hand2");
-            LOAD(MDV_CURSOR_NW_RESIZE, "nw_corner", "top_left_corner", "nw-resize");
-            LOAD(MDV_CURSOR_NE_RESIZE, "ne_corner", "top_right_corner", "ne-resize");
-            LOAD(MDV_CURSOR_SW_RESIZE, "sw_corner", "bottom_left_corner", "sw-resize");
-            LOAD(MDV_CURSOR_SE_RESIZE, "se_corner", "bottom_right_corner", "se-resize");
-            LOAD(MDV_CURSOR_NS_RESIZE, "ns-resize", "sb_v_double_arrow");
-            LOAD(MDV_CURSOR_EW_RESIZE, "ew-resize", "sb_h_double_arrow");
-            #undef LOAD
-        }
-    }
+    /* wl_cursor_theme load is deferred to first pointer enter — see
+       lazy_load_cursor_theme(). On modern compositors with
+       wp_cursor_shape_v1, it never runs at all. */
     w->cursor_current = MDV_CURSOR_DEFAULT;
     for(int i=0;i<2;i++)w->buffers[i]=bnew(w,width,height);
     wl_surface_commit(w->surface);wl_display_roundtrip(w->display);
