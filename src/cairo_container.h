@@ -7,7 +7,10 @@
 
 #include "litehtml.h"
 
+#include <climits>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <vector>
 #include <string>
@@ -217,8 +220,19 @@ public:
     /* Like sel_.get_ordered but with sy/ey snapped to the closest line. */
     void selection_bounds(int &sx, int &sy, int &ex, int &ey) const {
         sel_.get_ordered(sx, sy, ex, ey);
+        int raw_sy = sy, raw_ey = ey;
         sy = snap_y_to_line(sy);
         ey = snap_y_to_line(ey);
+        if (getenv("MDVIEW_DEBUG")) {
+            static int lsx=INT_MIN, lsy=0, lex=0, ley=0;
+            if (sx!=lsx || sy!=lsy || ex!=lex || ey!=ley) {
+                fprintf(stderr,
+                  "mdview/sel: bounds sx=%d sy=%d ex=%d ey=%d  (raw_sy=%d raw_ey=%d) anchor=(%d,%d) extent=(%d,%d)\n",
+                  sx, sy, ex, ey, raw_sy, raw_ey,
+                  sel_.anchor_x, sel_.anchor_y, sel_.extent_x, sel_.extent_y);
+                lsx=sx; lsy=sy; lex=ex; ley=ey;
+            }
+        }
     }
 
     std::vector<const TextSpan*>get_selected_sorted()const{
