@@ -260,7 +260,8 @@ struct App {
     mdv_window *win = nullptr;
 
     /* Help overlay */
-    bool help_visible = false;
+    bool   help_visible   = false;
+    double help_scroll_y  = 0;  /* px; clamped on each draw */
 
     /* File + live reload */
     std::string file_path;
@@ -796,11 +797,22 @@ static void draw_help_overlay(App *a, cairo_t *cr, int ww, int hh) {
     };
     const int n_lines = (int)(sizeof(lines) / sizeof(lines[0]));
 
-    /* Approximate panel dimensions; cap to fit viewport. */
-    int panel_w = 540, panel_h = 24 + 18 * n_lines + 24;
+    const int LINE_H   = 18;
+    const int PAD_TOP  = 18;
+    const int PAD_BOT  = 18;
+    int content_h = PAD_TOP + LINE_H * n_lines + PAD_BOT;
+
+    /* Panel dimensions: natural content size, capped to fit viewport. When
+       capped, the panel scrolls — content_h > panel_h is what max_scroll
+       is built from below. */
+    int panel_w = 540, panel_h = content_h;
     if (panel_w > ww - 40) panel_w = ww - 40;
     if (panel_h > hh - 40) panel_h = hh - 40;
     int x = (ww - panel_w) / 2, y = (hh - panel_h) / 2;
+
+    double max_scroll = (content_h > panel_h) ? (content_h - panel_h) : 0;
+    if (a->help_scroll_y < 0)          a->help_scroll_y = 0;
+    if (a->help_scroll_y > max_scroll) a->help_scroll_y = max_scroll;
 
     /* Card. */
     cairo_set_source_rgba(cr, c.bg[0], c.bg[1], c.bg[2], 0.97);
@@ -809,19 +821,41 @@ static void draw_help_overlay(App *a, cairo_t *cr, int ww, int hh) {
     cairo_set_line_width(cr, 1.0);
     cairo_rectangle(cr, x + 0.5, y + 0.5, panel_w - 1, panel_h - 1); cairo_stroke(cr);
 
+    /* Clip text to the panel interior so scrolled-off lines stay hidden. */
+    cairo_save(cr);
+    cairo_rectangle(cr, x + 1, y + 1, panel_w - 2, panel_h - 2);
+    cairo_clip(cr);
+
     PangoLayout *l = pango_cairo_create_layout(cr);
     PangoFontDescription *fd = pango_font_description_from_string("Monospace 10");
     pango_layout_set_font_description(l, fd);
     cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
-    int line_y = y + 18;
+    int line_y = y + PAD_TOP - (int)a->help_scroll_y;
     for (int i = 0; i < n_lines; i++) {
-        pango_layout_set_text(l, lines[i], -1);
-        cairo_move_to(cr, x + 20, line_y);
-        pango_cairo_show_layout(cr, l);
-        line_y += 18;
+        /* Skip lines entirely outside the panel to avoid wasted Pango work. */
+        if (line_y + LINE_H >= y && line_y <= y + panel_h) {
+            pango_layout_set_text(l, lines[i], -1);
+            cairo_move_to(cr, x + 20, line_y);
+            pango_cairo_show_layout(cr, l);
+        }
+        line_y += LINE_H;
     }
     pango_font_description_free(fd);
     g_object_unref(l);
+
+    cairo_restore(cr);
+
+    /* Scrollbar — only drawn when content overflows. Sized + positioned in
+       proportion to the visible/total ratio. */
+    if (max_scroll > 0) {
+        double bar_track_h = panel_h - 8;
+        double bar_h = bar_track_h * (double)panel_h / (double)content_h;
+        if (bar_h < 16) bar_h = 16;
+        double bar_y = y + 4 + (a->help_scroll_y / max_scroll) * (bar_track_h - bar_h);
+        cairo_set_source_rgba(cr, c.text[0], c.text[1], c.text[2], 0.30);
+        cairo_rectangle(cr, x + panel_w - 6, bar_y, 3, bar_h);
+        cairo_fill(cr);
+    }
 }
 
 /* Walk the litehtml tree looking for an element whose id="..." attribute
@@ -1239,6 +1273,14 @@ static void on_resize(mdv_window *w, int ww, int hh, void *ud) {
 
 static void on_scroll(mdv_window *w, int x, int y, double dx, double dy, uint32_t mods, void *ud) {
     App *a = (App*)ud;
+    /* When the help overlay is up, the wheel scrolls it — never the
+       document. 18 px per tick matches the help's LINE_H so each notch
+       advances one line. */
+    if (a->help_visible) {
+        a->help_scroll_y += dy * 18.0;
+        mdv_window_request_redraw(w);
+        return;
+    }
     /* Wheel over the sidebar scrolls the TOC list, not the document. */
     if (a->toc_visible && x < SIDEBAR_W && y < a->vp_h) {
         a->toc_scroll_y += dy * 3.0;
@@ -1825,6 +1867,36 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
         return;
     }
 
+    /* ---- Help-overlay key handling ----
+       Intercept before document keys: while help is up, scroll keys move
+       the help panel, F1/? toggles it back off, Esc closes. Anything else
+       is eaten so it doesn't accidentally drive the document underneath. */
+    if (a->help_visible && pr) {
+        if (ks == XKB_KEY_F1 || ks == XKB_KEY_question || ks == XKB_KEY_Escape) {
+            a->help_visible = false;
+            mdv_window_request_redraw(w);
+            return;
+        }
+        if (ks == XKB_KEY_q) { mdv_window_quit(w); return; }
+        double delta = 0;
+        switch (ks) {
+        case XKB_KEY_j: case XKB_KEY_Down:       delta =  36;  break;
+        case XKB_KEY_k: case XKB_KEY_Up:         delta = -36;  break;
+        case XKB_KEY_Page_Down:                  delta =  200; break;
+        case XKB_KEY_Page_Up:                    delta = -200; break;
+        case XKB_KEY_space:
+            delta = (mods & MDV_MOD_SHIFT) ? -200 : 200; break;
+        case XKB_KEY_Home: case XKB_KEY_g: a->help_scroll_y = 0;   mdv_window_request_redraw(w); return;
+        case XKB_KEY_End:  case XKB_KEY_G: a->help_scroll_y = 1e9; mdv_window_request_redraw(w); return;
+        }
+        if (delta != 0) {
+            a->help_scroll_y += delta;
+            mdv_window_request_redraw(w);
+        }
+        /* Eat anything else so e.g. Ctrl+T doesn't fire while reading help. */
+        return;
+    }
+
     /* ---- Normal key handling ---- */
 
     if (!pr) {
@@ -1888,6 +1960,7 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
     case XKB_KEY_End:  case XKB_KEY_G:  a->scroll_y = max_sy(a); mdv_window_request_redraw(w); return;
     case XKB_KEY_F1: case XKB_KEY_question:
         a->help_visible = !a->help_visible;
+        if (a->help_visible) a->help_scroll_y = 0;
         mdv_window_request_redraw(w);
         return;
     case XKB_KEY_Escape:
