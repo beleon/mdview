@@ -390,7 +390,15 @@ static const struct wl_data_device_listener ddd_l = {
 };
 
 /* Blocking paste. Returns malloc'd NUL-terminated string (caller frees) or
-   NULL if no text clipboard is available or read failed. */
+   NULL if no text clipboard is available or read failed.
+
+   Self-paste subtlety: when the clipboard offer is backed by our OWN
+   wl_data_source (e.g. the user just did Ctrl+C / Ctrl+X), the compositor
+   honors `receive` by sending a `wl_data_source.send` event back to us
+   carrying the write-end of the pipe. That event has to be dispatched
+   before the pipe-read can EOF, otherwise both ends deadlock. The
+   roundtrip below forces that dispatch; for foreign-app clipboards it
+   just flushes the receive request and is a cheap no-op. */
 char *mdv_window_paste_blocking(mdv_window *w) {
     if (!w || !w->cur_offer) return NULL;
     const char *mime = NULL;
@@ -401,7 +409,7 @@ char *mdv_window_paste_blocking(mdv_window *w) {
     if (pipe(fds) < 0) return NULL;
     wl_data_offer_receive(w->cur_offer, mime, fds[1]);
     close(fds[1]);
-    wl_display_flush(w->display);
+    wl_display_roundtrip(w->display);
 
     char *buf = NULL; size_t cap = 0, len = 0;
     char tmp[4096];
