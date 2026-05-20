@@ -1,7 +1,7 @@
 # Screenshots
 
 The repo README references five PNGs in this folder. Until you drop them
-in, GitHub will show broken-image placeholders — which is fine while you
+in, GitHub will show broken-image placeholders, which is fine while you
 iterate, but worth fixing before any link gets shared.
 
 ## Required files
@@ -12,14 +12,14 @@ iterate, but worth fixing before any link gets shared.
 | `dark-mode.png` | Showcase grid (top-left) | 960×640, dark mode, same doc as `hero.png` for visual continuity |
 | `find.png` | Showcase grid (top-right) | 960×640, dark mode, find bar open with a query that has multiple matches, ideally with one toggle (Aa / Word / .*) active |
 | `outline.png` | Showcase grid (bottom-left) | 960×640, either mode, outline sidebar (`Ctrl+T`) visible alongside the document |
-| `syntax.png` | Showcase grid (bottom-right) | 960×640, dark mode, scrolled to show a fully-highlighted code block (Python, Rust, or C++ work well — anything with comments + strings + keywords) |
+| `syntax.png` | Showcase grid (bottom-right) | 960×640, dark mode, scrolled to show a fully-highlighted code block (Python, Rust, or C++ work well; anything with comments + strings + keywords) |
 
 Keep all four "showcase grid" files at the same aspect ratio (3:2 works
 well) so the table stays tidy.
 
 ## Capturing on Wayland
 
-There's no single capture tool that works everywhere — pick what your
+There's no single capture tool that works everywhere; pick what your
 compositor ships with:
 
 ### GNOME
@@ -54,7 +54,7 @@ lists, a code block, a table, and a blockquote.
 
 ## Quality checks
 
-- Crop tight — no desktop background, no dock, no neighbouring windows.
+- Crop tight: no desktop background, no dock, no neighbouring windows.
 - Use the **default cursor theme** so the screenshot doesn't look
   like your personal setup. (mdview honours `XCURSOR_THEME`, so you can
   override it just for the capture: `XCURSOR_THEME=Adwaita ./mdview …`.)

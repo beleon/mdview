@@ -266,7 +266,7 @@ static const uint32_t SHAPE_FOR[MDV_CURSOR_COUNT] = {
 /* Draw the cursor for `kind` right now. Preferred path delegates to the
    compositor via wp_cursor_shape_device_v1, which means the user's actual
    cursor theme is honoured (this is what every other Wayland app does on
-   modern compositors — Hyprland/KDE/Sway/etc). Fallback path loads
+   modern compositors: Hyprland/KDE/Sway/etc). Fallback path loads
    wl_cursor_theme ourselves and attaches an SHM-backed cursor surface. */
 static void apply_cursor_kind(mdv_window *w, mdv_cursor_kind kind) {
     if (!w->pointer) return;
@@ -290,7 +290,7 @@ static void apply_cursor_kind(mdv_window *w, mdv_cursor_kind kind) {
                           (int)i->hotspot_x, (int)i->hotspot_y);
 }
 
-/* Switch to a different cursor kind. No-op if it's already current — the
+/* Switch to a different cursor kind. No-op if it's already current: the
    shape protocol allows redundant set_shape but skipping cuts traffic. */
 static void set_cursor_kind(mdv_window *w, mdv_cursor_kind kind) {
     if (kind == w->cursor_current) return;
@@ -490,7 +490,7 @@ static void pe(void *d,struct wl_pointer *p,uint32_t sr,struct wl_surface *sf,wl
 }
 static void pl(void *d,struct wl_pointer *p,uint32_t sr,struct wl_surface *sf){
     (void)p;(void)sr;(void)sf;mdv_window *w=d;int tb=tb_h(w);
-    /* Clamp to 0 if pointer was over the title bar — we never sent the matching
+    /* Clamp to 0 if pointer was over the title bar; we never sent the matching
        enter for that region, but downstream still expects non-negative coords. */
     int cy = w->mouse_y - tb;
     if (cy < 0) cy = 0;
@@ -517,7 +517,7 @@ static void pm(void *d,struct wl_pointer *p,uint32_t t,wl_fixed_t sx,wl_fixed_t 
             set_cursor_kind(w, MDV_CURSOR_DEFAULT);
         }
     }
-    /* Always forward motion — including when the pointer is in the CSD title
+    /* Always forward motion, including when the pointer is in the CSD title
        bar or has been dragged out of the surface entirely (which still
        generates motion events while a button is held, due to the implicit
        grab). The app needs those out-of-viewport coordinates to drive
@@ -637,7 +637,7 @@ static cairo_status_t png_read_mem(void *closure, unsigned char *out, unsigned i
 /* Decode one embedded PNG into a square wl_shm ARGB8888 buffer. Returns
    the resulting wl_buffer and stashes the backing storage so we can free
    it at window destroy. Returns NULL on any failure (oversized, decode
-   error, non-square, mmap failure) — the caller just skips this size. */
+   error, non-square, mmap failure); the caller just skips this size. */
 static struct wl_buffer *make_icon_buffer(mdv_window *w, const unsigned char *png_data, size_t png_len) {
     if (w->n_icon_bufs >= (int)(sizeof(w->icon_bufs)/sizeof(w->icon_bufs[0]))) return NULL;
 
@@ -687,7 +687,7 @@ static struct wl_buffer *make_icon_buffer(mdv_window *w, const unsigned char *pn
 
 /* Attach all baked-in icons to our toplevel via xdg-toplevel-icon-v1.
    No-op (with no protocol error) when the compositor doesn't expose
-   the manager — KDE/Hyprland/Sway do; Mutter < 47 does not. */
+   the manager. KDE/Hyprland/Sway do; Mutter < 47 does not. */
 static void setup_toplevel_icon(mdv_window *w) {
     if (!w->icon_manager || !w->xdg_toplevel || !w->shm) return;
     struct xdg_toplevel_icon_v1 *icon =
@@ -707,7 +707,7 @@ static void setup_toplevel_icon(mdv_window *w) {
 /* Create the cursor-shape device once both prerequisites exist. Called from
    the seat-capabilities handler (after wl_pointer is created) AND from the
    registry handler (in case the manager is advertised AFTER the seat caps
-   event has already fired). Idempotent — does nothing once the device is
+   event has already fired). Idempotent; does nothing once the device is
    already set. */
 static void try_get_cursor_shape_device(mdv_window *w) {
     if (!w || w->cursor_shape_device) return;
@@ -852,7 +852,7 @@ mdv_window *mdv_window_create(const char *title,int width,int height,const mdv_c
         wl_data_device_add_listener(w->data_device,&ddd_l,w);
     }
     /* Only load the wl_cursor_theme path if the compositor doesn't expose
-       cursor-shape-v1 — when it does, the compositor draws cursors itself
+       cursor-shape-v1. When it does, the compositor draws cursors itself
        using the user's actual theme. Loading our own theme would just be
        a wasted-memory fallback we'd never use. */
     if (!w->cursor_shape_manager) {
@@ -905,7 +905,7 @@ void mdv_window_destroy(mdv_window *w){
     if(!w)return;
     for(int i=0;i<2;i++)bfree(w->buffers[i]);
     /* Drain dispose list (may include buffers still busy from compositor's
-       perspective — at this point we're tearing down the connection anyway). */
+       perspective; at this point we're tearing down the connection anyway). */
     mdv_buffer *dp=w->dispose_list;
     while(dp){ mdv_buffer *next=dp->next_dispose; bfree(dp); dp=next; }
     if(w->timerfd>=0)close(w->timerfd);
@@ -927,7 +927,7 @@ void mdv_window_destroy(mdv_window *w){
     if(w->keyboard)wl_keyboard_destroy(w->keyboard);
     if(w->xdg_toplevel)xdg_toplevel_destroy(w->xdg_toplevel);
     if(w->xdg_surface)xdg_surface_destroy(w->xdg_surface);
-    /* Free icon buffers AFTER the toplevel is gone — the compositor was
+    /* Free icon buffers AFTER the toplevel is gone; the compositor was
        holding the icon (and therefore the buffers) until then. */
     for (int i = 0; i < w->n_icon_bufs; i++) {
         if (w->icon_bufs[i].wl_buf) wl_buffer_destroy(w->icon_bufs[i].wl_buf);
@@ -979,7 +979,7 @@ void mdv_window_run(mdv_window *w){
             if(w->repeat_armed&&w->cb.on_key)
                 w->cb.on_key(w,w->repeat_sym,w->repeat_mods,true,w->cb.userdata);
         }
-        /* Snapshot watched fds before dispatch — a callback may unwatch its
+        /* Snapshot watched fds before dispatch; a callback may unwatch its
            own fd (and shrink the array), so we must work off a stable copy. */
         struct { int fd; mdv_pollfd_cb cb; void *ud; } snap[MDV_MAX_WATCHED_FDS];
         int snap_n = w->n_watched;

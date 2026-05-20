@@ -67,7 +67,7 @@ static std::string md2html(const std::string &md, bool dark, int font_size) {
        proportionally with body font-size. We compute absolute px values
        up front because litehtml's em/rem semantics differ subtly from
        what we want (em on margins is relative to the element's own
-       font-size, not the body's — so plain em-based CSS would blow up
+       font-size, not the body's, so plain em-based CSS would blow up
        h1 margins). */
     double sf = font_size / 16.0;
     auto sc = [sf](int px) { return (int)(px * sf + 0.5); };
@@ -354,7 +354,7 @@ static std::vector<App::TocEntry> extract_toc(const std::string &html) {
     return r;
 }
 
-/* Firefox-pinch-zoom-style clamping. Strict on both axes — no whitespace
+/* Firefox-pinch-zoom-style clamping. Strict on both axes: no whitespace
    beyond either edge. When content fits an axis, scroll on that axis is
    pinned to 0 (top-/left-aligned). Zoom focus-point math may want to push
    into whitespace; clamp pulls it back, accepting the resulting
@@ -399,7 +399,7 @@ static void do_layout(App *a) {
     a->doc_w = a->doc->width();
     a->doc_h = a->doc->height();
     a->match_count_dirty = true;  /* layout changed → positions invalid */
-    /* Re-collect code-block positions whenever layout changes — sources of
+    /* Re-collect code-block positions whenever layout changes. Sources of
        layout change include zoom, font-size, dark-mode reshade, live reload. */
     {
         std::vector<litehtml::position> positions;
@@ -421,7 +421,7 @@ static void do_layout(App *a) {
     clamp(a);
 }
 
-/* Focus-point zoom — Google-Maps style. The doc point at viewport position
+/* Focus-point zoom, Google-Maps style. The doc point at viewport position
    `focus` stays at viewport position `focus` after the zoom. Bounds
    enforcement is delegated entirely to clamp(): when content fits the
    viewport, clamp() may pull the result to a valid range, which accepts a
@@ -516,7 +516,7 @@ static void open_search(App *a, mdv_window *w) {
    has invalidated the result since the last render (search query change,
    layout change, etc). Called from on_redraw (so the rendered overlay is
    correct) AND from navigate_match (so a query keystroke immediately
-   followed by Enter — both in the same event-loop dispatch — sees fresh
+   followed by Enter (both in the same event-loop dispatch) sees fresh
    matches rather than the previous render's stale list). */
 static void refresh_search_matches(App *a, mdv_window *w) {
     if (!a->match_count_dirty) return;
@@ -599,7 +599,7 @@ static void draw_sidebar(App *a, cairo_t *cr) {
     pango_layout_get_pixel_size(l, &tw_px, &th);
     int header_h = 6 + th + 4 + 1;  /* top pad + text + bottom pad + separator px */
 
-    /* Entries first — anything that scrolls past the top will be masked by
+    /* Entries first; anything that scrolls past the top will be masked by
        the header drawn afterwards. */
     int y0 = TOC_PAD_TOP - (int)a->toc_scroll_y + 24;
     for (size_t i = 0; i < a->toc_entries.size(); i++) {
@@ -746,7 +746,7 @@ static void draw_status_bar(App *a, cairo_t *cr, int ww, int hh) {
 
     /* Right: scroll % · zoom % (+ highlight indicator while jobs are running).
        Scroll % is only meaningful when the doc actually overflows the
-       viewport — when it fits, showing "100%" is misleading, so we omit it. */
+       viewport. When it fits, showing "100%" is misleading, so we omit it. */
     int zoom_pct = (int)(a->zoom * 100.0 + 0.5);
 
     std::string right;
@@ -821,7 +821,7 @@ static void draw_help_overlay(App *a, cairo_t *cr, int ww, int hh) {
     int content_h = PAD_TOP + LINE_H * n_lines + PAD_BOT;
 
     /* Panel dimensions: natural content size, capped to fit viewport. When
-       capped, the panel scrolls — content_h > panel_h is what max_scroll
+       capped, the panel scrolls. content_h > panel_h is what max_scroll
        is built from below. */
     int panel_w = 540, panel_h = content_h;
     if (panel_w > ww - 40) panel_w = ww - 40;
@@ -863,7 +863,7 @@ static void draw_help_overlay(App *a, cairo_t *cr, int ww, int hh) {
 
     cairo_restore(cr);
 
-    /* Scrollbar — only drawn when content overflows. Sized + positioned in
+    /* Scrollbar: only drawn when content overflows. Sized + positioned in
        proportion to the visible/total ratio. */
     if (max_scroll > 0) {
         double bar_track_h = panel_h - 8;
@@ -877,7 +877,7 @@ static void draw_help_overlay(App *a, cairo_t *cr, int ww, int hh) {
 }
 
 /* Walk the litehtml tree looking for an element whose id="..." attribute
-   matches. Returns null if not found. Iterative DFS — adversarial input
+   matches. Returns null if not found. Iterative DFS; adversarial input
    can't blow the stack. */
 static litehtml::element::ptr find_by_id(litehtml::element::ptr root, const std::string &id) {
     if (!root) return nullptr;
@@ -908,9 +908,9 @@ static void scroll_to_anchor(App *a, const std::string &id) {
 
 /* Walk the litehtml tree looking for an <a> whose placement contains
    (doc_x, doc_y). For inline anchors, the placement only covers their
-   primary line box — accuracy is limited but adequate for "is the right
+   primary line box. Accuracy is limited but adequate for "is the right
    click on a link?" detection. Returns the href or empty string.
-   Iterative DFS — adversarial input can't blow the stack. */
+   Iterative DFS; adversarial input can't blow the stack. */
 static std::string href_at(litehtml::element::ptr root, int doc_x, int doc_y) {
     if (!root) return "";
     std::vector<litehtml::element::ptr> stack;
@@ -954,7 +954,7 @@ static void open_external_url(const std::string &url) {
     waitpid(pid, NULL, 0);
 }
 
-/* Forward decl — full body lives further down with the rest of the
+/* Forward decl. Full body lives further down with the rest of the
    find-bar editing helpers, but draw_search_bar needs the selection
    bounds to highlight them. */
 static void field_sel_range(int anchor, int cur, int *lo, int *hi);
@@ -972,7 +972,7 @@ static void draw_search_bar(App *a, cairo_t *cr, int ww) {
     PangoFontDescription *fd = pango_font_description_from_string("Sans 13");
     pango_layout_set_font_description(l, fd);
 
-    /* "Find: <query>" — draw selection highlight first (if any), then label +
+    /* "Find: <query>". Draw selection highlight first (if any), then label +
        query, then caret. Both selection and caret are positioned by querying
        the laid-out layout at the byte offset (label length + field offset). */
     static const char LABEL[] = "Find: ";
@@ -1228,7 +1228,7 @@ static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
     cairo_save(cr);
     /* Clip + translate so doc rendering happens in the doc area only
        (right of sidebar). We deliberately clip all the way down to hh
-       rather than vp_h — the status bar is drawn afterwards and overlays
+       rather than vp_h: the status bar is drawn afterwards and overlays
        the bottom STATUS_H pixels, so anything the doc paints there is
        hidden. This avoids a thin "no draw" band at vp_h - 1 that some
        layouts produce when cairo and litehtml disagree on the exact
@@ -1264,7 +1264,7 @@ static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
         cairo_rectangle(cr, x, sv.pos, SB_W - 2, sv.len); cairo_fill(cr);
     }
 
-    /* Horizontal scrollbar — sits just above the status bar, not at the
+    /* Horizontal scrollbar: sits just above the status bar, not at the
        window bottom edge. Offset by sidebar width. */
     SBG sh = sbh(a);
     if (sh.vis) {
@@ -1302,7 +1302,7 @@ static void on_resize(mdv_window *w, int ww, int hh, void *ud) {
 
 static void on_scroll(mdv_window *w, int x, int y, double dx, double dy, uint32_t mods, void *ud) {
     App *a = (App*)ud;
-    /* When the help overlay is up, the wheel scrolls it — never the
+    /* When the help overlay is up, the wheel scrolls it, never the
        document. 18 px per tick matches the help's LINE_H so each notch
        advances one line. */
     if (a->help_visible) {
@@ -1335,7 +1335,7 @@ static void on_scroll(mdv_window *w, int x, int y, double dx, double dy, uint32_
 /* Update the selection's anchor/extent during a drag, respecting granularity.
    For CHAR: the extent simply follows the cursor (existing behavior).
    For WORD/LINE: find the range under the cursor, then extend from the
-   initial range — if the cursor's range is before the initial one, anchor
+   initial range. If the cursor's range is before the initial one, anchor
    to the initial range's end and extend to the cursor's start; if after,
    anchor to the initial's start and extend to the cursor's end; if
    overlapping (cursor still inside the initial range) keep the initial
@@ -1448,7 +1448,7 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
     }
 
     /* Cursor: arrow over scrollbars/search bar/status bar. In the doc area
-       use I-beam only over actual rendered text — blank margins, gaps
+       use I-beam only over actual rendered text; blank margins, gaps
        between paragraphs, and image areas get the default arrow.
        litehtml's set_cursor callback (registered in main) overrides this
        to "pointer" when hovering an <a>, fired from doc->on_mouse_over
@@ -1499,7 +1499,7 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
     int tw = toc_w(a);
 
     /* Context menu: while it's visible, every press anywhere is consumed by
-       the menu — either running an item or dismissing. */
+       the menu (either running an item or dismissing). */
     if (a->menu.visible) {
         if (!pr) return;  /* releases pass through silently */
         int idx = menu_item_at(a, x, y);
@@ -1897,7 +1897,7 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
             if (ks == XKB_KEY_v) {
                 char *txt = mdv_window_paste_blocking(w);
                 if (!txt) return;
-                /* Strip CR/LF — a multi-line paste into a find field never
+                /* Strip CR/LF: a multi-line paste into a find field never
                    makes sense; treat embedded newlines as no-ops rather than
                    silently corrupt the query. */
                 std::string clean;
@@ -1910,7 +1910,7 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
                 }
                 return;
             }
-            /* Any other Ctrl combo — eat so it doesn't get typed as text. */
+            /* Any other Ctrl combo: eat so it doesn't get typed as text. */
             return;
         }
         /* Try printable text */
@@ -2026,7 +2026,7 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
     case XKB_KEY_Escape:
         if (a->menu.visible) { menu_close(a); mdv_window_request_redraw(w); return; }
         if (a->help_visible) { a->help_visible = false; mdv_window_request_redraw(w); return; }
-        /* Otherwise eat it — Esc only dismisses overlays, never the window. */
+        /* Otherwise eat it. Esc only dismisses overlays, never the window. */
         return;
     case XKB_KEY_q:                      mdv_window_quit(w); return;
     }
@@ -2064,7 +2064,7 @@ static void start_highlight(App *a, mdv_window *w) {
 }
 
 /* Re-render the document from cached source markdown using whichever theme
-   and font-size are currently active. Does NOT preserve scroll — callers do
+   and font-size are currently active. Does NOT preserve scroll; callers do
    that themselves (some need to keep it as-is, others need to translate it
    through the new layout fraction-of-doc-style). */
 static void rerender_doc(App *a) {
@@ -2082,7 +2082,7 @@ static void rerender_doc(App *a) {
 static void toggle_dark_mode(App *a, mdv_window *w) {
     a->dark_mode = !a->dark_mode;
     /* Theme change doesn't reflow, so the literal scroll position stays
-       valid — just save/restore around the rebuild. */
+       valid; just save/restore around the rebuild. */
     double sx = a->scroll_x, sy = a->scroll_y;
     rerender_doc(a);
     a->scroll_x = sx; a->scroll_y = sy;
@@ -2227,7 +2227,7 @@ int main(int argc, char **argv) {
        do this AFTER reading the file so that "no such file" still surfaces
        to the user's terminal. setsid() puts the child in its own session,
        so closing the terminal won't SIGHUP the viewer. All three standard
-       fds are redirected to /dev/null — if any of them stays attached to
+       fds are redirected to /dev/null; if any of them stays attached to
        the launching tty, some terminal emulators won't close cleanly on
        Ctrl+D. Use --foreground to keep stderr visible while debugging. */
     if (!foreground) {
@@ -2249,7 +2249,7 @@ int main(int argc, char **argv) {
 
     /* Hash the canonical (realpath) path for the scroll-position LRU lookup.
        Falling back to the literal `file` string if realpath fails just
-       means symlinks aren't deduped — not a correctness problem. */
+       means symlinks aren't deduped, which isn't a correctness problem. */
     std::string canonical_path = file;
     { char buf[PATH_MAX]; if (realpath(file, buf)) canonical_path = buf; }
     uint64_t path_hash = mdv::fnv1a64(canonical_path);
@@ -2326,7 +2326,7 @@ int main(int argc, char **argv) {
     /* Sync the viewport to the actual window dims. The compositor's initial
        xdg_toplevel.configure usually echoes the size we requested, which
        means window.c's resize-on-change guard short-circuits and on_resize
-       never fires — leaving vp_w/vp_h at the struct defaults (900×700)
+       never fires, leaving vp_w/vp_h at the struct defaults (900×700)
        instead of the restored window size. Route through on_resize so the
        first layout uses the right dimensions. */
     on_resize(w, mdv_window_width(w), mdv_window_height(w), &app);

@@ -120,7 +120,7 @@ public:
         ss_=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1,1);
         sc_=cairo_create(ss_);
         /* Disable hint_metrics so glyph widths stay at fractional precision.
-           With hinting on, widths snap to whole pixels — fine at zoom=1.0
+           With hinting on, widths snap to whole pixels: fine at zoom=1.0
            but every fractional zoom step then has to redistribute the
            rounding error across the line, which makes monospace columns
            wobble (and occasionally overlap) under pinch zoom. */
@@ -166,8 +166,8 @@ public:
 
        Optional `bias_y`: if the input y is within SNAP_BIAS_PX of bias_y,
        return bias_y itself. Lets callers say "stick to whatever line this
-       OTHER y is on, as long as we haven't moved meaningfully away" —
-       used by extend_selection_drag with bias_y = anchor's y so a few
+       OTHER y is on, as long as we haven't moved meaningfully away".
+       Used by extend_selection_drag with bias_y = anchor's y so a few
        pixels of vertical wobble during a horizontal drag don't kick the
        extent to a neighbouring line. */
     static constexpr int SNAP_BIAS_PX = 18;
@@ -219,7 +219,7 @@ public:
        contain spans whose cys differ by a few pixels (different font
        baselines). After snap, sy and ey may land on two of those near-cys
        even though both endpoints are on the same logical line. Treat
-       anything within 6 px as same-line, and re-sort the x's — otherwise
+       anything within 6 px as same-line, and re-sort the x's, otherwise
        the get_ordered swap (which used the raw, pre-snap y's) leaves
        sx > ex and span_in's same-line both-partial branch finds nothing. */
     void selection_bounds(int &sx, int &sy, int &ex, int &ey) const {
@@ -272,7 +272,7 @@ public:
     }
 
     /* Find the recorded text span whose bounding box contains (doc_x, doc_y).
-       Linear scan — fine for typical document sizes. */
+       Linear scan, fine for typical document sizes. */
     const TextSpan *find_span_at(int doc_x, int doc_y) const {
         for (const auto &sp : spans_) {
             if (doc_y >= sp.y && doc_y < sp.y + sp.height &&
@@ -283,7 +283,7 @@ public:
     }
 
     /* Returns the word boundary at (doc_x, doc_y). Matches browser behavior:
-       characters fall into three classes — Word (alphanumeric / underscore /
+       characters fall into three classes: Word (alphanumeric / underscore /
        non-ASCII), Punct (everything else printable), and Space. A "word" is
        a maximal run of the SAME class within a single TextSpan, so
        double-clicking "hello," on the comma selects "," and double-clicking
@@ -334,7 +334,7 @@ public:
         TextRange r;
         const TextSpan *sp = find_span_at(doc_x, doc_y);
         if (!sp) {
-            /* Clicked between spans on a line — find by y only. */
+            /* Clicked between spans on a line; find by y only. */
             for (const auto &sp2 : spans_) {
                 if (doc_y >= sp2.y && doc_y < sp2.y + sp2.height) { sp = &sp2; break; }
             }
@@ -360,7 +360,7 @@ public:
        - whole_word: match must have a non-Word char (or string edge) on both sides.
        - regex_mode: query is an ECMAScript regex (case-insensitivity via regex::icase).
          Invalid patterns return an empty result (UI surfaces this via a red tint).
-       Per-span search — multi-line or cross-formatting matches still won't work. */
+       Per-span search; multi-line or cross-formatting matches still won't work. */
     std::vector<SearchHit> find_matches(const std::string &query,
                                         bool case_sensitive,
                                         bool whole_word,
@@ -620,7 +620,7 @@ public:
 private:
     enum class CharClass { Space, Word, Punct };
     /* For UTF-8 multibyte chars, every byte (including continuation bytes
-       0x80-0xBF) is >= 0x80 and classified as Word — which is what we want,
+       0x80-0xBF) is >= 0x80 and classified as Word, which is what we want,
        since the typical use is letters in scripts beyond ASCII. */
     static CharClass classify(unsigned char c) {
         if (isspace(c))                            return CharClass::Space;
@@ -631,7 +631,7 @@ private:
         cairo_set_source_rgba(cr,c.red/255.0,c.green/255.0,c.blue/255.0,c.alpha/255.0);}
     /* Lines own y-ranges as half-open intervals [cy - t, cy + t), with
        t = sp.height/2. At the exact boundary between two lines the LOWER
-       line owns the cursor — there is no "between two lines" state, no
+       line owns the cursor; there is no "between two lines" state, no
        both-partial flicker, just a clean atomic switch at the midpoint.
 
        `before_*` is inclusive (`cy <= sy - t`) and `after_*` is strict

@@ -1,7 +1,7 @@
 #pragma once
 
 /* inotify-based file watcher with debounce. Watches the *directory*
-   containing the file (so atomic rename-based saves are caught — many editors
+   containing the file (so atomic rename-based saves are caught; many editors
    write to a temp file and rename over the target), filters events by
    basename, and arms a one-shot 100ms timerfd. When the timer fires, calls
    the user's reload callback. */

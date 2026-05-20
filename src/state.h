@@ -4,7 +4,7 @@
    (or $HOME/.config/mdview/state).
 
    Global preferences (window size, theme, search flags) plus a small
-   bounded LRU map of per-file view state — scroll position and zoom —
+   bounded LRU map of per-file view state (scroll position and zoom)
    keyed by a 64-bit hash of the file's canonical path. The hash means an
    observer glancing at the state file sees opaque tokens, not a list of
    paths you've opened. */
@@ -36,7 +36,7 @@ struct State {
     bool   whole_word      = false;
     bool   regex_mode      = false;
     /* Per-file view-state LRU. Vector (not map) so we can preserve recency
-       order — most recently accessed at the back, oldest at the front,
+       order, most recently accessed at the back, oldest at the front,
        capped at FILES_LRU_MAX entries. Key is FNV1a-64(canonical_path). */
     std::vector<std::pair<uint64_t, FileView>> files;
 };
@@ -45,7 +45,7 @@ static const size_t FILES_LRU_MAX = 20;
 
 /* 64-bit FNV1a. We're hashing paths for identity ("is this the same file?"),
    not for crypto, so this trivial mixer is plenty. Stable across runs and
-   machines for the same byte sequence — which is what matters. */
+   machines for the same byte sequence, which is what matters. */
 static inline uint64_t fnv1a64(const std::string &s) {
     uint64_t h = 14695981039346656037ull;
     for (char c : s) { h ^= (uint8_t)c; h *= 1099511628211ull; }
@@ -119,7 +119,7 @@ static inline State load_state() {
     std::string line;
     while (std::getline(f, line)) {
         if (line.empty() || line[0] == '#') continue;
-        /* `view:<16-hex>=<scroll_x>,<scroll_y>,<zoom>` — hash key is fixed-width
+        /* `view:<16-hex>=<scroll_x>,<scroll_y>,<zoom>`. Hash key is fixed-width
            so we can split unambiguously after the prefix. We still accept
            the legacy `scroll:<hex>=<x>,<y>` lines from before per-file zoom
            was added; zoom defaults to 1.0 there. */
@@ -176,7 +176,7 @@ static inline void save_state(const State &s) {
     {
         std::ofstream f(tmp, std::ios::trunc);
         if (!f.is_open()) return;
-        f << "# mdview persisted state — auto-generated\n";
+        f << "# mdview persisted state, auto-generated\n";
         f << "window_width="   << s.window_width   << "\n";
         f << "window_height="  << s.window_height  << "\n";
         f << "dark_mode="      << (s.dark_mode ? 1 : 0)      << "\n";

@@ -7,7 +7,7 @@
    What goes here vs. state:
      - config (this file): user's manually-edited preferences. Read-only
        from mdview's perspective. We never write to it. Applies to files
-       that aren't in the per-file LRU yet — i.e. the first time you open
+       that aren't in the per-file LRU yet, i.e. the first time you open
        something.
      - state: machine-managed remembered preferences. Per-file scroll/zoom/
        font-size LRU, last window size, dark mode, search flags. We do

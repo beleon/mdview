@@ -8,7 +8,7 @@
    highlighter on each (concurrency capped at MAX_INFLIGHT), pipe the source
    in, read ANSI-coloured output back, and convert SGR escapes to inline
    <span style="color:#rrggbb"> tags. The app rebuilds the litehtml document
-   with the substituted spans — once after the first MAX_INFLIGHT jobs
+   with the substituted spans, once after the first MAX_INFLIGHT jobs
    finish, then once when everything is done. */
 
 #include <fcntl.h>
@@ -83,7 +83,7 @@ static inline std::vector<CodeBlock> extract_code_blocks(const std::string &html
         b.content_start = content_start;
         b.content_end   = close;
 
-        /* The <code ...> opening tag — language attribute lives here. */
+        /* The <code ...> opening tag. Language attribute lives here. */
         std::string opening = html.substr(code_tag_start, content_start - code_tag_start);
         size_t lp = opening.find("language-");
         if (lp != std::string::npos) {
@@ -193,7 +193,7 @@ static inline std::string ansi_to_html_spans(const std::string &ansi) {
     while (i < n) {
         unsigned char c = (unsigned char)ansi[i];
         if (c != 0x1B) { pending += (char)c; i++; continue; }
-        /* Escape sequence — flush text buffered with prior state. */
+        /* Escape sequence: flush text buffered with prior state. */
         flush();
         i++;
         if (i >= n) break;
@@ -241,7 +241,7 @@ static inline std::string ansi_to_html_spans(const std::string &ansi) {
                 }
                 else if (code >= 30 && code <= 37) color256_to_rgb(code - 30, s.r, s.g, s.b);
                 else if (code >= 90 && code <= 97) color256_to_rgb(code - 90 + 8, s.r, s.g, s.b);
-                /* Background colors (40-47, 100-107) and other codes — ignored. */
+                /* Background colors (40-47, 100-107) and other codes are ignored. */
             }
         } else if (next == ']') {
             /* OSC: read until BEL or ST (ESC \). */
@@ -251,7 +251,7 @@ static inline std::string ansi_to_html_spans(const std::string &ansi) {
                 i++;
             }
         }
-        /* else: other ESC <single byte> sequence — already consumed. */
+        /* else: other ESC <single byte> sequence, already consumed. */
     }
     flush();
     close_span();
@@ -303,7 +303,7 @@ public:
 
     ~Highlighter() {
         /* The destructor only closes our pipe fds and reaps stragglers.
-           Don't call mdv_window_unwatch_fd here — the window may already
+           Don't call mdv_window_unwatch_fd here: the window may already
            have been destroyed by the time the App goes out of scope.
            For mid-run shutdown call stop() explicitly. */
         for (auto &job : jobs_) {
@@ -317,7 +317,7 @@ public:
     }
 
     /* Cancel everything in flight and detach from the window. Safe to call
-       while the window is still alive — unlike the destructor, this DOES
+       while the window is still alive. Unlike the destructor, this DOES
        unwatch fds. */
     void stop() {
         for (auto &job : jobs_) {
@@ -354,7 +354,7 @@ public:
         on_milestone_  = on_milestone;
         userdata_      = userdata;
 
-        /* Reset run state — start() may be called again after a previous run
+        /* Reset run state. start() may be called again after a previous run
            (e.g. on dark-mode toggle or live reload). Without this, stale
            n_done_ / first_fired_ / all_done_ from the prior run would either
            fire milestones immediately or never. */
@@ -438,7 +438,7 @@ private:
         if (in_flight_ >= MAX_INFLIGHT) return;
         for (auto &job : jobs_) {
             if (job.launched || job.done) continue;
-            if (launch_job(job)) return;  /* success — one slot filled */
+            if (launch_job(job)) return;  /* success, one slot filled */
             /* Couldn't launch this one; mark it done and try the next. */
             job.done = true;
             n_done_++;
@@ -452,7 +452,7 @@ private:
 
         /* Stage stdin in a temp file rather than a pipe. With a pipe the
            parent's synchronous write can deadlock against a child whose
-           own stdout pipe is full — both ends blocked. A regular file lets
+           own stdout pipe is full; both ends blocked. A regular file lets
            the child consume input at its own pace regardless of how fast
            we drain its stdout. /tmp is typically tmpfs (memory-backed). */
         char tmpl[] = "/tmp/mdview-hl.XXXXXX";
@@ -534,7 +534,7 @@ private:
         job.launched  = true;
 
         if (mdv_window_watch_fd(win_, out_pipe[0], &Highlighter::on_data_static, &job) != 0) {
-            /* Watcher table is full — abandon this job. */
+            /* Watcher table is full; abandon this job. */
             close(out_pipe[0]);
             kill(pid, SIGKILL);
             waitpid(pid, NULL, 0);

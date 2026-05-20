@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>A quick-look Markdown viewer for the Wayland desktop.</strong><br>
-  Open a README without breaking flow — launches fast, doesn't pin your terminal, gets out of your way.
+  Open a README without breaking flow. Launches fast, doesn't pin your terminal, gets out of your way.
 </p>
 
 <p align="center">
@@ -24,7 +24,7 @@
 
 ## Why mdview
 
-Developers swim in `.md` files — READMEs, design notes, runbooks, the
+Developers swim in `.md` files: READMEs, design notes, runbooks, the
 random `NOTES.md` in every project. You're in the terminal. You want to
 actually *read* one. The options aren't great:
 
@@ -96,7 +96,7 @@ The cost is low enough that you'll actually use it.
 ./build.sh
 ```
 
-Produces `dist/mdview`. The binary is self-contained — icons baked in, no runtime data files.
+Produces `dist/mdview`. The binary is self-contained: icons baked in, no runtime data files.
 
 ### Or with system CMake
 
@@ -177,8 +177,8 @@ Also: `MDVIEW_NO_HIGHLIGHT=1` env var to suppress syntax highlighting globally.
 
 mdview keeps two files under `~/.config/mdview/`:
 
-- **`state`** — machine-managed. Per-file scroll / zoom / text-size LRU (hashed paths, last 20 files), last window size, dark mode, search flags. Rewritten on every close — don't edit by hand.
-- **`config`** — user-editable. Defaults for newly-opened files only; the LRU always wins for files you've already adjusted. Optional — if missing, built-in defaults apply.
+- **`state`** — machine-managed. Per-file scroll / zoom / text-size LRU (hashed paths, last 20 files), last window size, dark mode, search flags. Rewritten on every close; don't edit by hand.
+- **`config`** — user-editable. Defaults for newly-opened files only; the LRU always wins for files you've already adjusted. Optional: if missing, built-in defaults apply.
 
 ```ini
 # ~/.config/mdview/config
@@ -199,7 +199,7 @@ Only libraries already loaded in any Wayland session:
 | Library | Why |
 |---|---|
 | `libwayland-client.so` | Wayland protocol |
-| `libwayland-cursor.so` | Cursor theme — only loaded on compositors without `wp_cursor_shape_v1` |
+| `libwayland-cursor.so` | Cursor theme; only loaded on compositors without `wp_cursor_shape_v1` |
 | `libxkbcommon.so` | Keyboard layout & keysyms |
 | `libcairo.so` | 2D rendering |
 | `libpangocairo-1.0.so` / `libpango-1.0.so` | Text shaping & layout |
@@ -208,7 +208,7 @@ Only libraries already loaded in any Wayland session:
 
 ## License
 
-mdview is MIT-licensed — see [LICENSE](LICENSE).
+mdview is MIT-licensed. See [LICENSE](LICENSE).
 
 Bundled / linked dependencies:
 
