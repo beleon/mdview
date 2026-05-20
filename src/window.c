@@ -63,7 +63,7 @@ struct mdv_window {
     struct xdg_surface *xdg_surface; struct xdg_toplevel *xdg_toplevel;
     struct zxdg_decoration_manager_v1 *decoration_manager;
     struct zxdg_toplevel_decoration_v1 *toplevel_decoration;
-    bool use_csd; char *title;
+    bool use_csd; bool maximized; char *title;
     struct wl_data_device_manager *data_device_manager;
     struct wl_data_device *data_device; struct wl_data_source *data_source;
     char *clipboard_text;
@@ -304,7 +304,13 @@ static const struct xdg_wm_base_listener xwl={.ping=xwp};
 static void xsc(void *d,struct xdg_surface *s,uint32_t sr){mdv_window *w=d;xdg_surface_ack_configure(s,sr);w->configured=true;w->needs_redraw=true;}
 static const struct xdg_surface_listener xsl={.configure=xsc};
 static void xtc(void *d,struct xdg_toplevel *t,int32_t ww,int32_t hh,struct wl_array *st){
-    (void)t;(void)st;mdv_window *w=d;
+    (void)t; mdv_window *w=d;
+    bool is_max = false;
+    uint32_t *s;
+    wl_array_for_each(s, st) {
+        if (*s == XDG_TOPLEVEL_STATE_MAXIMIZED) is_max = true;
+    }
+    w->maximized = is_max;
     if(ww>0&&hh>0&&(ww!=w->surf_width||hh!=w->surf_height)){
         w->surf_width=ww;w->surf_height=hh;rebufs(w,ww,hh);
         if(w->cb.on_resize)w->cb.on_resize(w,cw(w),ch(w),w->cb.userdata);
@@ -520,14 +526,24 @@ static void pm(void *d,struct wl_pointer *p,uint32_t t,wl_fixed_t sx,wl_fixed_t 
 }
 static void pb(void *d,struct wl_pointer *p,uint32_t sr,uint32_t t,uint32_t btn,uint32_t st){
     (void)p;(void)t;mdv_window *w=d;w->last_serial=sr;bool pr=(st==WL_POINTER_BUTTON_STATE_PRESSED);
+    /* Compute click_count up-front: the CSD title-bar shortcut below needs it
+       to distinguish a single-click (start interactive move) from a double-
+       click (toggle maximize). */
+    int count = w->click_count;
+    if (pr && btn == BTN_LEFT) count = update_click_count(w);
     if(w->use_csd&&pr&&btn==BTN_LEFT){
         if(csd_close(w,w->mouse_x,w->mouse_y)){if(w->cb.on_close)w->cb.on_close(w,w->cb.userdata);w->running=false;return;}
         uint32_t edge=csd_resize_edge(w,w->mouse_x,w->mouse_y);
         if(edge){xdg_toplevel_resize(w->xdg_toplevel,w->seat,sr,edge);return;}
-        if(csd_tb(w,w->mouse_x,w->mouse_y)){xdg_toplevel_move(w->xdg_toplevel,w->seat,sr);return;}
+        if(csd_tb(w,w->mouse_x,w->mouse_y)){
+            if (count >= 2) {
+                if (w->maximized) xdg_toplevel_unset_maximized(w->xdg_toplevel);
+                else              xdg_toplevel_set_maximized  (w->xdg_toplevel);
+                return;
+            }
+            xdg_toplevel_move(w->xdg_toplevel,w->seat,sr);return;
+        }
     }
-    int count = w->click_count;
-    if (pr && btn == BTN_LEFT) count = update_click_count(w);
     int tb=tb_h(w);
     if(pr){if(w->mouse_y>=tb&&w->cb.on_mouse_button)w->cb.on_mouse_button(w,w->mouse_x,w->mouse_y-tb,(int)btn,w->modifiers,pr,count,w->cb.userdata);}
     else{if(w->cb.on_mouse_button)w->cb.on_mouse_button(w,w->mouse_x,(w->mouse_y-tb>0?w->mouse_y-tb:0),(int)btn,w->modifiers,pr,count,w->cb.userdata);}

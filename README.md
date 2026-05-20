@@ -124,6 +124,7 @@ Produces `dist/mdview`. The binary is self-contained — `dist/mdview --install`
 - **Click on link** — open in browser, or scroll to in-doc anchor
 - **Right-click** — context menu (Open Link / Copy / Select All / Find / Reload / Toggle Dark)
 - **Title bar drag** — move window (CSD mode)
+- **Title bar double-click** — toggle maximize (CSD mode)
 
 ## Configuration
 
