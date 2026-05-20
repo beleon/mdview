@@ -336,6 +336,7 @@ public:
     }
 
     void set_tool(HLTool t) { tool_ = t; }
+    void set_dark(bool d)   { dark_ = d; }
     HLTool tool() const     { return tool_; }
     bool   active() const   { return tool_ != HLTool::None; }
     bool   all_done() const { return all_done_; }
@@ -487,21 +488,28 @@ private:
             if (devnull >= 0) { dup2(devnull, 2); close(devnull); }
 
             const char *lang = job.lang.empty() ? nullptr : job.lang.c_str();
+            /* Theme picks: light themes (GitHub/friendly/github) tune comment
+               colors as a muted grey that all but vanishes on the dark code-
+               block background (`#2a2a2a`). Swap to a dark-mode counterpart
+               when dark is on. */
+            const char *bat_theme    = dark_ ? "OneHalfDark" : "GitHub";
+            const char *pyg_style    = dark_ ? "style=monokai" : "style=friendly";
+            const char *hl_style     = dark_ ? "molokai" : "github";
             switch (tool_) {
             case HLTool::Bat:
                 if (lang) execlp("bat", "bat", "--color=always", "--plain",
                                   "--paging=never", "--decorations=never",
-                                  "--theme=GitHub", "-l", lang, (char*)NULL);
+                                  "--theme", bat_theme, "-l", lang, (char*)NULL);
                 break;
             case HLTool::Pygmentize:
                 if (lang) execlp("pygmentize", "pygmentize", "-f", "terminal16m",
-                                  "-O", "style=friendly", "-l", lang, (char*)NULL);
+                                  "-O", pyg_style, "-l", lang, (char*)NULL);
                 else      execlp("pygmentize", "pygmentize", "-f", "terminal16m",
-                                  "-O", "style=friendly", "-g", (char*)NULL);
+                                  "-O", pyg_style, "-g", (char*)NULL);
                 break;
             case HLTool::Highlight:
                 if (lang) execlp("highlight", "highlight",
-                                  "--out-format=truecolor", "--style=github",
+                                  "--out-format=truecolor", "--style", hl_style,
                                   "--syntax", lang, (char*)NULL);
                 break;
             case HLTool::SourceHighlight:
@@ -591,6 +599,7 @@ private:
     }
 
     HLTool                 tool_           = HLTool::None;
+    bool                   dark_           = false;
     std::vector<Job>       jobs_;
     int                    n_highlightable_ = 0;
     int                    n_done_          = 0;

@@ -1783,6 +1783,7 @@ static void toggle_dark_mode(App *a, mdv_window *w) {
     rerender_doc(a);
     a->scroll_x = sx; a->scroll_y = sy;
     clamp(a);
+    a->highlighter.set_dark(a->dark_mode);
     if (a->highlighter.tool() != mdv::HLTool::None) start_highlight(a, w);
     mdv_window_request_redraw(w);
 }
@@ -1982,6 +1983,7 @@ int main(int argc, char **argv) {
     app.doc = litehtml::document::createFromString(app.html.c_str(), &app.con, litehtml::master_css);
 
     app.highlighter.set_tool(mdv::detect_tool(no_highlight));
+    app.highlighter.set_dark(app.dark_mode);
 
     /* Anchor clicks: # → in-doc scroll; everything else → xdg-open. */
     app.con.set_anchor_click_cb([&app](const std::string &url) {
