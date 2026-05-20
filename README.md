@@ -165,6 +165,10 @@ Only libraries already loaded in any Wayland session:
 
 ## License
 
+mdview is MIT-licensed — see [LICENSE](LICENSE).
+
+Bundled / linked dependencies:
+
 - litehtml: BSD-3-Clause
 - md4c: MIT
 - Cairo, Pango, Wayland: LGPL
