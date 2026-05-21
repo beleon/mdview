@@ -1,6 +1,6 @@
 # Screenshots
 
-The repo README references five PNGs in this folder. Until you drop them
+The repo README references three PNGs in this folder. Until you drop them
 in, GitHub will show broken-image placeholders, which is fine while you
 iterate, but worth fixing before any link gets shared.
 
@@ -8,13 +8,11 @@ iterate, but worth fixing before any link gets shared.
 
 | File | Used as | Suggested window |
 |---|---|---|
-| `hero.png` | Top-of-README banner | 1280×800, light mode, a longish doc scrolled near the top so headings + paragraphs + a code block are visible at once |
-| `dark-mode.png` | Showcase grid (top-left) | 960×640, dark mode, same doc as `hero.png` for visual continuity |
-| `find.png` | Showcase grid (top-right) | 960×640, dark mode, find bar open with a query that has multiple matches, ideally with one toggle (Aa / Word / .*) active |
-| `outline.png` | Showcase grid (bottom-left) | 960×640, either mode, outline sidebar (`Ctrl+T`) visible alongside the document |
-| `syntax.png` | Showcase grid (bottom-right) | 960×640, dark mode, scrolled to show a fully-highlighted code block (Python, Rust, or C++ work well; anything with comments + strings + keywords) |
+| `hero.png` | Top-of-README banner (rendered at 600 px wide) | Light mode, a longish doc scrolled near the top so headings + paragraphs + a code block are visible at once. ~1000×640 captures well at the 600 px display size. |
+| `outline.png` | Showcase grid (left) | 960×640, light mode, outline sidebar (`Ctrl+T`) visible alongside the document |
+| `find.png` | Showcase grid (right) | 960×640, dark mode, find bar open with a query that has multiple matches, ideally with one toggle (Aa / Word / .*) active |
 
-Keep all four "showcase grid" files at the same aspect ratio (3:2 works
+Keep the two showcase-grid files at the same aspect ratio (3:2 works
 well) so the table stays tidy.
 
 ## Capturing on Wayland

@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/hero.png" alt="mdview rendering a Markdown document" width="820">
+  <img src="docs/screenshots/hero.png" alt="mdview rendering a Markdown document" width="600">
 </p>
 
 ---
@@ -68,22 +68,12 @@ The cost is low enough that you'll actually use it.
 <table>
   <tr>
     <td align="center">
-      <img src="docs/screenshots/dark-mode.png" alt="Dark mode" width="380"><br>
-      <sub><b>Dark mode.</b> <code>Ctrl+D</code> toggles; syntax-highlight theme swaps too.</sub>
+      <img src="docs/screenshots/outline.png" alt="Outline sidebar in light mode" width="420"><br>
+      <sub><b>Outline sidebar (light mode).</b> <code>Ctrl+T</code>. h1–h3, click to jump.</sub>
     </td>
     <td align="center">
-      <img src="docs/screenshots/find.png" alt="Find bar" width="380"><br>
-      <sub><b>Find bar.</b> Case / whole-word / regex modes, full text-cursor editing.</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <img src="docs/screenshots/outline.png" alt="Outline sidebar" width="380"><br>
-      <sub><b>Outline sidebar.</b> <code>Ctrl+T</code>. h1–h3, click to jump.</sub>
-    </td>
-    <td align="center">
-      <img src="docs/screenshots/syntax.png" alt="Syntax-highlighted code blocks" width="380"><br>
-      <sub><b>Async syntax highlighting.</b> Off-thread <code>bat</code> / <code>pygmentize</code> / <code>highlight</code>.</sub>
+      <img src="docs/screenshots/find.png" alt="Find bar in dark mode" width="420"><br>
+      <sub><b>Find bar (dark mode).</b> Case / whole-word / regex, full text-cursor editing.</sub>
     </td>
   </tr>
 </table>
