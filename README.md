@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/hero.png" alt="mdview rendering a Markdown document" width="600">
+  <img src="docs/screenshots/hero.png" alt="bat README.md (left) vs mdview README.md (right)" width="600">
 </p>
 
 ---
