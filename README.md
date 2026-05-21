@@ -196,6 +196,13 @@ Only libraries already loaded in any Wayland session:
 | `libgdk_pixbuf-2.0.so` | Image loading |
 | `librsvg-2.0.so` | SVG rendering |
 
+## Acknowledgements
+
+Designed by [Leon Becker](https://blog.leonbecker.de); implementation
+largely by [Claude Code](https://claude.com/claude-code). The project's
+structure, scope, and design decisions are mine; most of the code itself
+was produced by Claude under my direction.
+
 ## License
 
 mdview is MIT-licensed. See [LICENSE](LICENSE).
