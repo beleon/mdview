@@ -66,14 +66,14 @@ The cost is low enough that you'll actually use it.
 ## Showcase
 
 <table>
-  <tr>
-    <td align="center">
-      <img src="docs/screenshots/outline.png" alt="Outline sidebar in light mode" width="420"><br>
-      <sub><b>Outline sidebar (light mode).</b> <code>Ctrl+T</code>. h1–h3, click to jump.</sub>
+  <tr width="700">
+    <td align="center" width="350">
+      <img src="docs/screenshots/find.png" alt="Find bar in dark mode" width="300"><br>
+      <sub><b>Find bar (light mode).</b> Case / whole-word / regex, full text-cursor editing.</sub>
     </td>
-    <td align="center">
-      <img src="docs/screenshots/find.png" alt="Find bar in dark mode" width="420"><br>
-      <sub><b>Find bar (dark mode).</b> Case / whole-word / regex, full text-cursor editing.</sub>
+    <td align="center" width="350">
+      <img src="docs/screenshots/outline.png" alt="Outline sidebar in light mode" width="300"><br>
+      <sub><b>Outline sidebar (dark mode).</b> <code>Ctrl+T</code>. h1–h3, click to jump.</sub>
     </td>
   </tr>
 </table>
