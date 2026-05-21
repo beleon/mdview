@@ -66,6 +66,12 @@ struct CachedImage {
     cairo_surface_t *surface = nullptr;
     RsvgHandle      *svg     = nullptr;
     int width = 0, height = 0;
+    /* Placeholder marker: set when the URL couldn't be loaded (typically a
+       remote URL we don't fetch, or a missing local file). `label` is what
+       the placeholder tag prints; size is filled in by get_or_load using
+       the container's Pango context. */
+    bool             missing = false;
+    std::string      label;
     ~CachedImage() {
         if (surface) cairo_surface_destroy(surface);
         if (svg)     g_object_unref(svg);
@@ -143,9 +149,40 @@ public:
 
     std::string resolve_path(const std::string &s)const{
         if(s.empty()||s[0]=='/')return s; return bd_.empty()?s:bd_+"/"+s; }
+
+    /* For a URL like https://img.shields.io/... pull the host out as the
+       placeholder label; for a relative path use the basename. Keeps the
+       tag short and gives the reader enough signal to know what's there. */
+    static std::string placeholder_label(const std::string &s) {
+        auto sp = s.find("://");
+        if (sp != std::string::npos) {
+            size_t start = sp + 3;
+            size_t end   = s.find('/', start);
+            return s.substr(start, end == std::string::npos ? s.size() - start : end - start);
+        }
+        auto slash = s.find_last_of('/');
+        return slash == std::string::npos ? s : s.substr(slash + 1);
+    }
+
     CachedImage*get_or_load(const std::string &s){
         auto it=imgs_.find(s);if(it!=imgs_.end())return it->second;
-        auto*i=CachedImage::load(resolve_path(s));imgs_[s]=i;return i; }
+        CachedImage *i = CachedImage::load(resolve_path(s));
+        if (!i) {
+            /* Synthesise a placeholder so the image still occupies space in
+               the layout and the reader can see something is there. Size
+               tracks the label's text width with badge-ish padding. */
+            i = new CachedImage();
+            i->missing = true;
+            i->label   = placeholder_label(s);
+            pango_layout_set_text(pl_, i->label.c_str(), -1);
+            int lw = 0, lh = 0;
+            pango_layout_get_pixel_size(pl_, &lw, &lh);
+            i->width  = lw + 16;
+            i->height = lh + 8;
+            if (i->width  < 40) i->width  = 40;
+            if (i->height < 20) i->height = 20;
+        }
+        imgs_[s]=i;return i; }
 
     int x_to_index(const TextSpan &sp,int dx)const{
         int lx=dx-sp.x; if(lx<=0)return 0; if(lx>=sp.width)return(int)sp.text.size();
@@ -568,7 +605,32 @@ public:
         cairo_save(cr);
         cairo_rectangle(cr,layer.clip_box.x,layer.clip_box.y,layer.clip_box.width,layer.clip_box.height);
         cairo_clip(cr);cairo_translate(cr,layer.origin_box.x,layer.origin_box.y);
-        if(img->is_svg()){img->render_svg(cr,layer.origin_box.width,layer.origin_box.height);}
+        if (img->missing) {
+            /* Faintly-bordered tag with the source's host/basename inside.
+               Themed against dark_mode_; the same muted slate works in both. */
+            double w = layer.origin_box.width, h = layer.origin_box.height;
+            double r = dark_mode_ ? 0.78 : 0.32;
+            double g = dark_mode_ ? 0.78 : 0.32;
+            double b = dark_mode_ ? 0.78 : 0.32;
+            cairo_set_source_rgba(cr, r, g, b, 0.12);
+            cairo_rectangle(cr, 0.5, 0.5, w - 1, h - 1); cairo_fill(cr);
+            cairo_set_source_rgba(cr, r, g, b, 0.55);
+            cairo_set_line_width(cr, 1.0);
+            cairo_rectangle(cr, 0.5, 0.5, w - 1, h - 1); cairo_stroke(cr);
+            PangoLayout *lay = pango_cairo_create_layout(cr);
+            PangoFontDescription *fd = pango_font_description_from_string("Sans 10");
+            pango_layout_set_font_description(lay, fd);
+            pango_layout_set_text(lay, img->label.c_str(), -1);
+            pango_layout_set_ellipsize(lay, PANGO_ELLIPSIZE_END);
+            pango_layout_set_width(lay, (int)((w - 12) * PANGO_SCALE));
+            int tw = 0, th = 0;
+            pango_layout_get_pixel_size(lay, &tw, &th);
+            cairo_set_source_rgba(cr, r, g, b, 0.95);
+            cairo_move_to(cr, (w - tw) / 2.0, (h - th) / 2.0);
+            pango_cairo_show_layout(cr, lay);
+            pango_font_description_free(fd);
+            g_object_unref(lay);
+        } else if(img->is_svg()){img->render_svg(cr,layer.origin_box.width,layer.origin_box.height);}
         else if(img->surface){
             double sx=(double)layer.origin_box.width/img->width,sy=(double)layer.origin_box.height/img->height;
             cairo_scale(cr,sx,sy);cairo_set_source_surface(cr,img->surface,0,0);
