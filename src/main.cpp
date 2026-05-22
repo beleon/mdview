@@ -274,6 +274,17 @@ struct App {
     bool   arg_no_highlight = false;
     bool   arg_no_reload    = false;
 
+    /* Startup-phase timestamps. Always captured (overhead is nil); printed
+       to stderr from on_first_frame when MDVIEW_DEBUG=1. */
+    struct {
+        struct timespec t_start       = {};  /* after argv parse */
+        struct timespec t_after_read  = {};  /* after file read */
+        struct timespec t_after_state = {};  /* after state+config+realpath */
+        struct timespec t_after_md    = {};  /* after md2html + ids + toc */
+        struct timespec t_after_doc   = {};  /* after litehtml createFromString */
+        struct timespec t_after_create= {};  /* after mdv_window_create */
+    } perf;
+
     /* File + live reload */
     std::string file_path;
     std::string file_basename;
@@ -2143,8 +2154,50 @@ static void toggle_toc(App *a, mdv_window *w) {
     mdv_window_request_redraw(w);
 }
 
+static double perf_ms_between(const struct timespec &a, const struct timespec &b) {
+    return (b.tv_sec - a.tv_sec) * 1000.0 + (b.tv_nsec - a.tv_nsec) / 1e6;
+}
+
+/* Read /proc/self/status, return VmRSS in kB or -1 if unavailable. */
+static long perf_read_vm_rss_kb() {
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return -1;
+    long kb = -1;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "VmRSS:", 6) == 0) { sscanf(line + 6, "%ld", &kb); break; }
+    }
+    fclose(f);
+    return kb;
+}
+
 static void on_first_frame(mdv_window *w, void *ud) {
     App *a = (App*)ud;
+
+    /* Perf report when MDVIEW_DEBUG=1. Use `-f` so stderr stays attached
+       to the launching terminal:
+           MDVIEW_DEBUG=1 mdview -f doc.md */
+    if (getenv("MDVIEW_DEBUG")) {
+        struct timespec t_paint;
+        clock_gettime(CLOCK_MONOTONIC, &t_paint);
+        long rss_kb = perf_read_vm_rss_kb();
+        fprintf(stderr, "mdview perf (cold start → first paint):\n");
+        fprintf(stderr, "  file read           : %7.2f ms\n", perf_ms_between(a->perf.t_start,        a->perf.t_after_read));
+        fprintf(stderr, "  state + config load : %7.2f ms\n", perf_ms_between(a->perf.t_after_read,   a->perf.t_after_state));
+        fprintf(stderr, "  md4c + heading ids  : %7.2f ms\n", perf_ms_between(a->perf.t_after_state,  a->perf.t_after_md));
+        fprintf(stderr, "  litehtml doc build  : %7.2f ms\n", perf_ms_between(a->perf.t_after_md,     a->perf.t_after_doc));
+        fprintf(stderr, "  window create       : %7.2f ms\n", perf_ms_between(a->perf.t_after_doc,    a->perf.t_after_create));
+        fprintf(stderr, "  wait for first paint: %7.2f ms\n", perf_ms_between(a->perf.t_after_create, t_paint));
+        fprintf(stderr, "  TOTAL               : %7.2f ms\n", perf_ms_between(a->perf.t_start,        t_paint));
+        if (rss_kb >= 0)
+            fprintf(stderr, "  RSS at first paint  : %.1f MB (%ld kB)\n", rss_kb / 1024.0, rss_kb);
+        fprintf(stderr, "  source size         : %zu bytes\n", a->source_md.size());
+        fprintf(stderr, "  text spans drawn    : %zu\n",       a->con.spans().size());
+        fprintf(stderr, "  pre/code blocks     : %zu\n",       a->code_blocks.size());
+        fprintf(stderr, "  viewport            : %dx%d px (zoom %.2fx, font %dpx)\n",
+                mdv_window_width(w), mdv_window_height(w), a->zoom, a->font_size);
+    }
+
     /* Deferred from main(): both are cheap but reading $PATH and registering
        an inotify watch shouldn't sit on the first-paint critical path. */
     a->highlighter.set_tool(mdv::detect_tool(a->arg_no_highlight));
@@ -2223,6 +2276,12 @@ int main(int argc, char **argv) {
     }
     if (!file) { print_usage(argv[0]); return 1; }
 
+    /* Perf instrumentation: capture phase timestamps starting here. Always
+       captured; only printed when MDVIEW_DEBUG=1 (see on_first_frame). */
+    struct timespec _perf_t_start, _perf_t_after_read, _perf_t_after_state,
+                    _perf_t_after_md, _perf_t_after_doc, _perf_t_after_create;
+    clock_gettime(CLOCK_MONOTONIC, &_perf_t_start);
+
     /* Highlighter children may exit before we finish writing to their stdin
        (now backed by a tempfile, so deadlock-free) or read from their stdout.
        Ignore SIGPIPE process-wide so a stray write returns EPIPE rather
@@ -2232,6 +2291,7 @@ int main(int argc, char **argv) {
     std::ifstream f(file);
     if (!f.is_open()) { fprintf(stderr, "Error: cannot open '%s'\n", file); return 1; }
     std::ostringstream ss; ss << f.rdbuf(); f.close();
+    clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_read);
 
     /* Fork off so the launching shell gets its prompt back immediately. We
        do this AFTER reading the file so that "no such file" still surfaces
@@ -2263,6 +2323,7 @@ int main(int argc, char **argv) {
     std::string canonical_path = file;
     { char buf[PATH_MAX]; if (realpath(file, buf)) canonical_path = buf; }
     uint64_t path_hash = mdv::fnv1a64(canonical_path);
+    clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_state);
 
     App app;
     app.file_path = file;
@@ -2294,7 +2355,9 @@ int main(int argc, char **argv) {
     app.con.set_dark_mode(app.dark_mode);
     { auto sl = app.file_path.find_last_of('/');
       app.con.set_base_dir(sl != std::string::npos ? app.file_path.substr(0, sl) : "."); }
+    clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_md);
     app.doc = litehtml::document::createFromString(app.html.c_str(), &app.con, litehtml::master_css);
+    clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_doc);
 
     /* Highlighter PATH probe + set_tool are deferred to on_first_frame, so
        the cost of scanning $PATH for bat/pygmentize/etc. doesn't sit
@@ -2339,6 +2402,14 @@ int main(int argc, char **argv) {
     std::string title = std::string("mdview - ") + file;
     mdv_window *w = mdv_window_create(title.c_str(), win_w, win_h, &cb);
     if (!w) { fprintf(stderr, "Error: cannot create Wayland window\n"); return 1; }
+    clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_create);
+    /* Copy local phase timestamps into App so on_first_frame can read them. */
+    app.perf.t_start        = _perf_t_start;
+    app.perf.t_after_read   = _perf_t_after_read;
+    app.perf.t_after_state  = _perf_t_after_state;
+    app.perf.t_after_md     = _perf_t_after_md;
+    app.perf.t_after_doc    = _perf_t_after_doc;
+    app.perf.t_after_create = _perf_t_after_create;
     app.win = w;
     /* Sync the viewport to the actual window dims. The compositor's initial
        xdg_toplevel.configure usually echoes the size we requested, which

@@ -134,7 +134,12 @@ mdview path/to/document.md
 | `--uninstall` | Undo `--install` |
 | `-h` / `--help` | Show usage |
 
-Also: `MDVIEW_NO_HIGHLIGHT=1` env var to suppress syntax highlighting globally.
+Env vars:
+
+- `MDVIEW_NO_HIGHLIGHT=1` suppresses syntax highlighting globally.
+- `MDVIEW_DEBUG=1` prints a startup perf report (phase timings, RSS,
+  doc stats) to stderr at first paint. Combine with `-f` so stderr
+  stays attached to your terminal: `MDVIEW_DEBUG=1 mdview -f doc.md`.
 
 ### Keyboard
 
