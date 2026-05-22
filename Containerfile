@@ -3,7 +3,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake pkg-config \
     libwayland-dev wayland-protocols libxkbcommon-dev \
-    libcairo2-dev libpango1.0-dev libgdk-pixbuf-2.0-dev librsvg2-dev \
+    libcairo2-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY CMakeLists.txt /build/mdview/

@@ -3,12 +3,16 @@
 #include <cairo/cairo.h>
 #include <pango/pangocairo.h>
 #include <gdk-pixbuf/gdk-pixbuf.h>
-#include <librsvg/rsvg.h>
+#include <lunasvg.h>
 
 #include "litehtml.h"
 
 #include <cmath>
+#include <cstring>
+#include <fstream>
+#include <iterator>
 #include <limits>
+#include <memory>
 #include <vector>
 #include <string>
 #include <map>
@@ -63,43 +67,82 @@ struct TextRange {
 };
 
 struct CachedImage {
-    cairo_surface_t *surface = nullptr;
-    RsvgHandle      *svg     = nullptr;
+    /* Raster path: a populated cairo surface (PNG/JPG/etc.). */
+    cairo_surface_t                    *surface = nullptr;
+    /* SVG path: lunasvg owns the parsed document; we rasterize lazily into
+       svg_cache at the requested display size and reuse it across redraws
+       until the requested size changes. lunasvg outputs ARGB32 premultiplied,
+       which is exactly Cairo's CAIRO_FORMAT_ARGB32. */
+    std::unique_ptr<lunasvg::Document>  svg_doc;
+    cairo_surface_t                    *svg_cache    = nullptr;
+    int                                 svg_cache_w  = 0;
+    int                                 svg_cache_h  = 0;
     int width = 0, height = 0;
     /* Placeholder marker: set when the URL couldn't be loaded (typically a
        remote URL we don't fetch, or a missing local file). `label` is what
        the placeholder tag prints; size is filled in by get_or_load using
        the container's Pango context. */
-    bool             missing = false;
-    std::string      label;
+    bool        missing = false;
+    std::string label;
     ~CachedImage() {
-        if (surface) cairo_surface_destroy(surface);
-        if (svg)     g_object_unref(svg);
+        if (surface)   cairo_surface_destroy(surface);
+        if (svg_cache) cairo_surface_destroy(svg_cache);
     }
-    bool is_svg() const { return svg != nullptr; }
-    void render_svg(cairo_t *cr, double tw, double th) const {
-        if (!svg) return;
-        RsvgRectangle vp = { 0, 0, tw, th };
-        rsvg_handle_render_document(svg, cr, &vp, NULL);
+    bool is_svg() const { return svg_doc != nullptr; }
+    void render_svg(cairo_t *cr, double tw, double th) {
+        if (!svg_doc) return;
+        int iw = (int)std::ceil(tw), ih = (int)std::ceil(th);
+        if (iw <= 0 || ih <= 0) return;
+        if (!svg_cache || svg_cache_w != iw || svg_cache_h != ih) {
+            if (svg_cache) cairo_surface_destroy(svg_cache);
+            svg_cache_w = iw;
+            svg_cache_h = ih;
+            svg_cache   = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, iw, ih);
+            cairo_surface_flush(svg_cache);
+            lunasvg::Bitmap bm = svg_doc->renderToBitmap(iw, ih);
+            if (!bm.isNull()) {
+                unsigned char *dst = cairo_image_surface_get_data(svg_cache);
+                int dst_stride = cairo_image_surface_get_stride(svg_cache);
+                int src_stride = bm.stride();
+                int row_bytes  = std::min(dst_stride, src_stride);
+                int rows       = std::min(ih, bm.height());
+                for (int y = 0; y < rows; y++)
+                    memcpy(dst + y * dst_stride, bm.data() + y * src_stride, row_bytes);
+            }
+            cairo_surface_mark_dirty(svg_cache);
+        }
+        cairo_set_source_surface(cr, svg_cache, 0, 0);
+        cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+        cairo_paint(cr);
     }
     static CachedImage *load(const std::string &path) {
         { auto dot = path.rfind('.');
           if (dot != std::string::npos) {
             std::string ext = path.substr(dot);
             for (auto &c : ext) c = (char)tolower((unsigned char)c);
-            if (ext == ".svg" || ext == ".svgz") {
-                GError *err = nullptr;
-                RsvgHandle *h = rsvg_handle_new_from_file(path.c_str(), &err);
-                if (h) {
-                    double w=0,h2=0; bool got=false;
-                    if (rsvg_handle_get_intrinsic_size_in_pixels(h,&w,&h2)&&w>0&&h2>0) got=true;
-                    if (!got) { gboolean hw,hh,hv; RsvgLength rw,rh; RsvgRectangle vb;
-                        rsvg_handle_get_intrinsic_dimensions(h,&hw,&rw,&hh,&rh,&hv,&vb);
-                        if(hv&&vb.width>0&&vb.height>0){w=vb.width;h2=vb.height;got=true;} }
-                    if (got) { auto *ci=new CachedImage(); ci->svg=h; ci->width=(int)ceil(w); ci->height=(int)ceil(h2); return ci; }
-                    g_object_unref(h);
+            /* Plain .svg only — .svgz (gzipped) is unsupported by lunasvg
+               and rare enough in real-world READMEs to ignore. */
+            if (ext == ".svg") {
+                std::ifstream f(path, std::ios::binary);
+                if (f.is_open()) {
+                    std::string data((std::istreambuf_iterator<char>(f)),
+                                     std::istreambuf_iterator<char>());
+                    auto doc = lunasvg::Document::loadFromData(data);
+                    if (doc) {
+                        float w = doc->width(), h = doc->height();
+                        if (w <= 0 || h <= 0) {
+                            auto bb = doc->boundingBox();
+                            w = bb.w; h = bb.h;
+                        }
+                        if (w > 0 && h > 0) {
+                            auto *ci = new CachedImage();
+                            ci->svg_doc = std::move(doc);
+                            ci->width   = (int)std::ceil(w);
+                            ci->height  = (int)std::ceil(h);
+                            return ci;
+                        }
+                    }
                 }
-                if(err)g_error_free(err);
             }
           }
         }

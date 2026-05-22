@@ -11,7 +11,6 @@ pkg_check_modules(XKB     REQUIRED xkbcommon)
 pkg_check_modules(CAIRO   REQUIRED cairo)
 pkg_check_modules(PANGO   REQUIRED pangocairo)
 pkg_check_modules(GDKPIX  REQUIRED gdk-pixbuf-2.0)
-pkg_check_modules(RSVG    REQUIRED librsvg-2.0)
 
 # ==============================================================================
 # Generate xdg-shell protocol (if not already present)
@@ -111,6 +110,19 @@ target_include_directories(litehtml
 target_compile_definitions(litehtml PUBLIC LITEHTML_UTF8_ONLY)
 
 # ==============================================================================
+# lunasvg + plutovg (vendored under thirdparty/lunasvg/)
+# Replaces librsvg → libxml2 → libicudata, dropping ~10-15 MB of anon RSS at
+# the cost of slightly reduced SVG spec coverage (no filters/animations).
+# ==============================================================================
+
+set(_prev_shared_libs ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build lunasvg + plutovg as static libs" FORCE)
+set(PLUTOVG_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LUNASVG_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(thirdparty/lunasvg EXCLUDE_FROM_ALL)
+set(BUILD_SHARED_LIBS ${_prev_shared_libs} CACHE BOOL "" FORCE)
+
+# ==============================================================================
 # md4c
 # ==============================================================================
 
@@ -152,16 +164,15 @@ target_include_directories(mdview PRIVATE
     ${CAIRO_INCLUDE_DIRS}
     ${PANGO_INCLUDE_DIRS}
     ${GDKPIX_INCLUDE_DIRS}
-    ${RSVG_INCLUDE_DIRS}
 )
 
 target_link_libraries(mdview PRIVATE
     litehtml
     md4c
+    lunasvg::lunasvg
     ${WAYLAND_LIBRARIES}
     ${XKB_LIBRARIES}
     ${CAIRO_LIBRARIES}
     ${PANGO_LIBRARIES}
     ${GDKPIX_LIBRARIES}
-    ${RSVG_LIBRARIES}
 )

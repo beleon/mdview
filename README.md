@@ -102,7 +102,7 @@ Produces `dist/mdview`. The binary is self-contained: icons baked in, no runtime
 
 ```bash
 sudo apt install libwayland-dev libwayland-cursor0 wayland-protocols libxkbcommon-dev \
-                 libcairo2-dev libpango1.0-dev libgdk-pixbuf-2.0-dev librsvg2-dev
+                 libcairo2-dev libpango1.0-dev libgdk-pixbuf-2.0-dev
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
 ```
 
@@ -208,8 +208,11 @@ Only libraries already loaded in any Wayland session:
 | `libxkbcommon.so` | Keyboard layout & keysyms |
 | `libcairo.so` | 2D rendering |
 | `libpangocairo-1.0.so` / `libpango-1.0.so` | Text shaping & layout |
-| `libgdk_pixbuf-2.0.so` | Image loading |
-| `librsvg-2.0.so` | SVG rendering |
+| `libgdk_pixbuf-2.0.so` | Raster image loading (PNG/JPG/GIF) |
+
+SVG support is provided by [lunasvg](https://github.com/sammycage/lunasvg)
++ plutovg, vendored under `thirdparty/lunasvg/` and statically linked. No
+runtime dependency on librsvg / glib-gobject / libxml2 / ICU.
 
 ## Acknowledgements
 
@@ -228,4 +231,5 @@ Bundled / linked dependencies:
 |---|---|
 | litehtml | BSD-3-Clause |
 | md4c | MIT |
+| lunasvg, plutovg | MIT |
 | Cairo, Pango, Wayland | LGPL |
