@@ -1,4 +1,0 @@
-/build
-/subprojects/*
-!/subprojects/*.wrap
-*.user
