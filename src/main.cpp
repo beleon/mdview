@@ -1253,7 +1253,14 @@ static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
     cairo_translate(cr, tw, 0);
     cairo_scale(cr, a->zoom, a->zoom);
 
-    litehtml::position clip(0, 0, a->doc_w, a->doc_h);
+    /* Clip is in the same coordinate frame as element positions inside
+       litehtml's draw chain. Since we pass (-dsx, -dsy) as the root offset,
+       child elements compute pos = doc_pos + (-dsx, -dsy), i.e. in viewport
+       coords. A clip of (0, 0, doc_w, doc_h) therefore excludes anything
+       above the viewport (pos.y < 0) — including text we still want
+       recorded so find can match across the whole document. Pass the
+       document's full extent in viewport coords instead. */
+    litehtml::position clip(-dsx, -dsy, a->doc_w, a->doc_h);
     a->con.set_render_cr(cr);
     a->doc->draw((litehtml::uint_ptr)cr, -dsx, -dsy, &clip);
     a->con.set_render_cr(nullptr);
