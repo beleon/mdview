@@ -22,6 +22,16 @@
 
 ---
 
+## Features
+
+- Near-instant startup for quick looks at `.md` files
+- Native Wayland window that gets out of your way
+- Detaches from the shell by default, so your terminal stays free
+- Real Markdown rendering: headings, tables, links, images, anchors, and highlighted code blocks
+- Find, live reload, dark mode, zoom, text selection, and outline sidebar
+- Keyboard, mouse, and touchpad-friendly navigation
+- No GTK, Qt, Electron, Tauri, browser engine, or XWayland fallback
+
 ## Why mdview
 
 Developers swim in `.md` files: READMEs, design notes, runbooks, the
