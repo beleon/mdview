@@ -138,7 +138,14 @@ static inline int do_install() {
         "Name=mdview\n"
         "GenericName=Markdown Viewer\n"
         "Comment=Lightweight Wayland-native Markdown viewer\n"
-        "Exec=" + bin_path + " %F\n"
+        /* -f keeps mdview attached to its launcher (no fork+detach). When the
+           launcher is a GUI shell (gnome-shell, KDE, etc.) it tracks the
+           process via systemd app-scope cgroups; if we detach, the launcher
+           sees the parent exit immediately, the startup indicator hangs, and
+           cgroup tracking breaks. Terminal invocations of `mdview foo.md`
+           still detach by default — only this desktop-launch path needs the
+           flag. */
+        "Exec=" + bin_path + " -f %F\n"
         "Icon=mdview\n"
         "MimeType=text/markdown;\n"
         "Categories=Office;Viewer;TextTools;\n"
