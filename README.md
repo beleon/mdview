@@ -221,6 +221,17 @@ largely by [Claude Code](https://claude.com/claude-code). The project's
 structure, scope, and design decisions are mine; most of the code itself
 was produced by Claude under my direction.
 
+## Related projects
+
+Markdown viewing has a small but varied ecosystem. A few neighbours and
+how they differ:
+
+- [**glow**](https://github.com/charmbracelet/glow) — terminal TUI viewer. Excellent if you want to stay inside the terminal entirely and skip rendering altogether.
+- [**mdcat**](https://github.com/swsnr/mdcat) — terminal "cat for markdown" with syntax highlighting. Stream-style, no scrolling UI.
+- [**litemdview**](https://codeberg.org/g0tsu/litemdview) — GUI viewer in the same spirit (also embeds litehtml), built on GTKmm 3.
+
+mdview occupies the Wayland-native, frameworkless-GUI niche.
+
 ## License
 
 mdview is MIT-licensed. See [LICENSE](LICENSE).
