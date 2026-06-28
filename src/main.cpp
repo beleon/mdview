@@ -55,10 +55,47 @@ static const Theme THEME_DARK = {
     "#3a3a3a"
 };
 
+/* Convert [[Name]] and [[Name|Display]] wiki links to standard Markdown before
+   md4c sees the source. Names with spaces use angle-bracket URL syntax so
+   md4c parses them correctly. */
+static std::string preprocess_wiki_links(const std::string &md) {
+    std::string out;
+    out.reserve(md.size());
+    size_t i = 0;
+    while (i < md.size()) {
+        if (i + 1 < md.size() && md[i] == '[' && md[i+1] == '[') {
+            size_t end = md.find("]]", i + 2);
+            if (end != std::string::npos) {
+                std::string inner = md.substr(i + 2, end - (i + 2));
+                std::string name = inner, display = inner;
+                size_t pipe = inner.find('|');
+                if (pipe != std::string::npos) {
+                    name    = inner.substr(0, pipe);
+                    display = inner.substr(pipe + 1);
+                }
+                std::string target = name + ".md";
+                bool needs_brackets = target.find(' ') != std::string::npos;
+                out += '[';
+                out += display;
+                out += "](";
+                if (needs_brackets) out += '<';
+                out += target;
+                if (needs_brackets) out += '>';
+                out += ')';
+                i = end + 2;
+                continue;
+            }
+        }
+        out += md[i++];
+    }
+    return out;
+}
+
 static std::string md2html(const std::string &md, bool dark, int font_size) {
     std::string body;
+    std::string processed = preprocess_wiki_links(md);
     auto cb = [](const MD_CHAR *t, MD_SIZE s, void *u) { static_cast<std::string*>(u)->append(t,s); };
-    if (md_html(md.c_str(), (MD_SIZE)md.size(), cb, &body,
+    if (md_html(processed.c_str(), (MD_SIZE)processed.size(), cb, &body,
         MD_FLAG_TABLES|MD_FLAG_STRIKETHROUGH|MD_FLAG_TASKLISTS|MD_FLAG_PERMISSIVEAUTOLINKS, 0) != 0)
         body = "<p style=\"color:#c33\">Error parsing markdown</p>";
 
@@ -290,6 +327,17 @@ struct App {
     std::string file_basename;
     std::string source_md;     /* raw markdown source (for dark-mode + reload re-render) */
     mdv::LiveReloader live_reloader;
+
+    /* Linear back/forward history of followed local .md links. Each entry
+       remembers its scroll position. hist_idx points at the current file;
+       navigating to a new link truncates any forward entries. */
+    struct HistEntry { std::string path; double scroll_y; };
+    std::vector<HistEntry> history;
+    int                    hist_idx = -1;
+    /* A link click fires on_anchor_click from inside litehtml's dispatch.
+       Navigating there would rebuild a->doc and free the document mid-call,
+       so the click handler queues the target here and runs it afterwards. */
+    std::string            pending_nav;
 
     /* Theme */
     bool dark_mode = false;
@@ -805,6 +853,8 @@ static void draw_help_overlay(App *a, cairo_t *cr, int ww, int hh) {
         "    Ctrl+0                Reset text size + zoom",
         "    Ctrl+T                Toggle outline sidebar",
         "    Ctrl+D                Toggle dark mode",
+        "    Alt+← / Backspace     Back (followed links)",
+        "    Alt+→ / Shift+Bksp    Forward",
         "    Ctrl+C                Copy selection",
         "    Ctrl+A                Select all",
         "    Ctrl+F                Find in document",
@@ -948,6 +998,79 @@ static std::string href_at(litehtml::element::ptr root, int doc_x, int doc_y) {
         for (auto it = kids.rbegin(); it != kids.rend(); ++it) stack.push_back(*it);
     }
     return "";
+}
+
+/* Decode %XX percent-escapes. md4c percent-encodes spaces and non-ASCII bytes
+   in hrefs (see md4c-html.c escape_map), so the path we get back must be
+   decoded before it names a real file. Invalid escapes are passed through. */
+static std::string percent_decode(const std::string &s) {
+    std::string out;
+    out.reserve(s.size());
+    auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '%' && i + 2 < s.size()) {
+            int hi = hex(s[i+1]), lo = hex(s[i+2]);
+            if (hi >= 0 && lo >= 0) { out += (char)((hi << 4) | lo); i += 2; continue; }
+        }
+        out += s[i];
+    }
+    return out;
+}
+
+/* Resolve a link href to a local .md file path.  Returns true and sets
+   resolved_path if href points at a Markdown file reachable from current_file.
+   Handles relative paths, file:// URLs, and optional #fragments (stripped). */
+static bool resolve_local_md(const std::string &href, const std::string &current_file,
+                              std::string &resolved_path) {
+    if (href.empty()) return false;
+
+    /* Reject non-file remote schemes (http, https, mailto, …). */
+    size_t scheme_end = href.find("://");
+    bool has_scheme = scheme_end != std::string::npos && scheme_end < 12;
+    std::string path;
+    if (has_scheme) {
+        std::string scheme = href.substr(0, scheme_end);
+        if (scheme != "file") return false;
+        /* file:///abs/path or file://host/path — skip past the authority. */
+        size_t path_start = href.find('/', scheme_end + 3);
+        if (path_start == std::string::npos) return false;
+        path = href.substr(path_start);
+    } else {
+        path = href;
+    }
+
+    /* Strip fragment before decoding: a real fragment '#' is literal in the
+       href, while a '#' inside a filename arrives as %23. */
+    size_t hash = path.find('#');
+    if (hash != std::string::npos) path = path.substr(0, hash);
+    path = percent_decode(path);
+    if (path.empty()) return false;
+
+    /* Must end in .md or .markdown (case-insensitive). */
+    std::string lower = path;
+    for (char &c : lower) c = (char)tolower((unsigned char)c);
+    bool is_md = (lower.size() >= 3  && lower.compare(lower.size()-3, 3, ".md")       == 0)
+              || (lower.size() >= 9  && lower.compare(lower.size()-9, 9, ".markdown") == 0);
+    if (!is_md) return false;
+
+    /* Resolve relative paths against the directory of the current file. */
+    std::string full;
+    if (path[0] != '/') {
+        size_t sl = current_file.find_last_of('/');
+        full = (sl != std::string::npos ? current_file.substr(0, sl + 1) : "./") + path;
+    } else {
+        full = path;
+    }
+
+    char real[PATH_MAX];
+    if (!realpath(full.c_str(), real)) return false;
+    resolved_path = real;
+    return true;
 }
 
 /* Spawn xdg-open <url> detached. Double-fork pattern so the grandchild is
@@ -1109,6 +1232,8 @@ static void toggle_toc(App *a, mdv_window *w);
 static void reload_file(void *ud);
 static void change_font_size(App *a, mdv_window *w, int delta);
 static void reset_view(App *a, mdv_window *w);
+static void navigate_to(App *a, const std::string &abs_path);
+static void history_go(App *a, int dir);
 
 static const int MENU_ITEM_H = 26;
 static const int MENU_PAD_V  = 4;
@@ -1203,7 +1328,14 @@ static void draw_context_menu(App *a, cairo_t *cr) {
 static void menu_run(App *a, mdv_window *w, const App::MenuItem &it) {
     if (!it.enabled) return;
     switch (it.action) {
-    case App::MenuAction::OpenLink:    open_external_url(it.param); break;
+    case App::MenuAction::OpenLink: {
+        std::string resolved;
+        if (resolve_local_md(it.param, a->file_path, resolved))
+            navigate_to(a, resolved);
+        else
+            open_external_url(it.param);
+        break;
+    }
     case App::MenuAction::CopyLink:    mdv_window_copy_to_clipboard(w, it.param.c_str()); break;
     case App::MenuAction::Copy: {
         std::string t = a->con.get_selected_text();
@@ -1676,6 +1808,15 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
     std::vector<litehtml::position> rb;
     if (pr) a->doc->on_lbutton_down(dx, dy, dx, dy, rb);
     else    a->doc->on_lbutton_up(dx, dy, dx, dy, rb);
+
+    /* on_lbutton_up may have queued a local-link navigation (see App::
+       pending_nav). Run it now, after litehtml's dispatch has returned, so
+       rebuilding a->doc can't free the document while it's still on the stack. */
+    if (!a->pending_nav.empty()) {
+        std::string target;
+        target.swap(a->pending_nav);
+        navigate_to(a, target);
+    }
 }
 
 static void on_pointer_leave(mdv_window *w, int lx, int ly, void *ud) {
@@ -2031,6 +2172,10 @@ static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud)
         navigate_match(a, w, mods & MDV_MOD_SHIFT);
         return;
     }
+    /* Back/forward through followed-link history (browser-style). */
+    if (ks == XKB_KEY_Left  && (mods & MDV_MOD_ALT)) { history_go(a, -1); return; }
+    if (ks == XKB_KEY_Right && (mods & MDV_MOD_ALT)) { history_go(a, +1); return; }
+    if (ks == XKB_KEY_BackSpace) { history_go(a, (mods & MDV_MOD_SHIFT) ? +1 : -1); return; }
     switch (ks) {
     case XKB_KEY_j: case XKB_KEY_Down:  start_ks(a, w, KEY_SPD); return;
     case XKB_KEY_k: case XKB_KEY_Up:    start_ks(a, w, -KEY_SPD); return;
@@ -2236,6 +2381,69 @@ static void reload_file(void *ud) {
     mdv_window_request_redraw(a->win);
 }
 
+/* Swap the displayed document to abs_path: read it, re-point the live-reload
+   watcher, re-render, update window title. Does NOT touch scroll position or
+   history — callers own that. Returns false (leaving state untouched) if the
+   file can't be read, so navigation can no-op instead of corrupting history. */
+static bool load_document(App *a, const std::string &abs_path) {
+    std::ifstream f(abs_path);
+    if (!f.is_open()) return false;
+    std::ostringstream ss; ss << f.rdbuf(); f.close();
+    a->source_md = ss.str();
+
+    a->file_path = abs_path;
+    size_t sl = abs_path.find_last_of('/');
+    a->file_basename = (sl == std::string::npos) ? abs_path : abs_path.substr(sl + 1);
+    a->con.set_base_dir(sl != std::string::npos ? abs_path.substr(0, sl) : ".");
+
+    /* Re-point the inotify watch at the new file's directory. */
+    if (!a->arg_no_reload && a->win) {
+        a->live_reloader.stop();
+        a->live_reloader.start(a->win, a->file_path, reload_file, a);
+    }
+
+    rerender_doc(a);
+    if (a->highlighter.tool() != mdv::HLTool::None) start_highlight(a, a->win);
+
+    if (a->win) {
+        std::string title = "mdview - " + a->file_basename;
+        mdv_window_set_title(a->win, title.c_str());
+    }
+    return true;
+}
+
+/* Follow a local .md link in place: push onto history (clearing any forward
+   entries) and jump to the top of the new document. */
+static void navigate_to(App *a, const std::string &abs_path) {
+    double cur_scroll = a->scroll_y;
+    if (!load_document(a, abs_path)) return;
+
+    if (a->hist_idx >= 0 && a->hist_idx < (int)a->history.size())
+        a->history[a->hist_idx].scroll_y = cur_scroll;
+    a->history.resize(a->hist_idx + 1);          /* drop forward history */
+    a->history.push_back({abs_path, 0.0});
+    a->hist_idx = (int)a->history.size() - 1;
+
+    a->scroll_x = 0; a->scroll_y = 0;
+    clamp(a);
+    if (a->win) mdv_window_request_redraw(a->win);
+}
+
+/* Move dir steps along the history (-1 back, +1 forward), restoring that
+   entry's saved scroll. No-op at either end or if the target file is gone. */
+static void history_go(App *a, int dir) {
+    int target = a->hist_idx + dir;
+    if (target < 0 || target >= (int)a->history.size()) return;
+    double cur_scroll = a->scroll_y;
+    if (!load_document(a, a->history[target].path)) return;
+    a->history[a->hist_idx].scroll_y = cur_scroll;
+    a->hist_idx = target;
+    a->scroll_x = 0;
+    a->scroll_y = a->history[target].scroll_y;
+    clamp(a);
+    if (a->win) mdv_window_request_redraw(a->win);
+}
+
 static void print_usage(const char *prog) {
     fprintf(stderr,
         "Usage: %s [options] <path-to-markdown-file>\n"
@@ -2336,6 +2544,12 @@ int main(int argc, char **argv) {
     app.file_path = file;
     { auto sl = app.file_path.find_last_of('/');
       app.file_basename = (sl == std::string::npos) ? app.file_path : app.file_path.substr(sl + 1); }
+    /* Seed history with the starting file (absolute so back/forward survives a
+       later cwd change), so following a link has a valid origin to return to. */
+    { char real[PATH_MAX];
+      std::string h0 = realpath(file, real) ? std::string(real) : app.file_path;
+      app.history.push_back({h0, 0.0});
+      app.hist_idx = 0; }
     /* Defaults for a file we've never seen come from the user's config;
        per-file LRU overrides if present. */
     double initial_zoom = config.zoom;
@@ -2376,14 +2590,18 @@ int main(int argc, char **argv) {
     app.arg_no_reload    = no_reload;
     app.highlighter.set_dark(app.dark_mode);
 
-    /* Anchor clicks: # → in-doc scroll; everything else → xdg-open. */
+    /* Anchor clicks: # → in-doc scroll; local .md → new mdview; else → xdg-open. */
     app.con.set_anchor_click_cb([&app](const std::string &url) {
         if (url.empty()) return;
         if (url[0] == '#') {
             scroll_to_anchor(&app, url.substr(1));
             if (app.win) mdv_window_request_redraw(app.win);
         } else {
-            open_external_url(url);
+            std::string resolved;
+            if (resolve_local_md(url, app.file_path, resolved))
+                app.pending_nav = resolved;   /* deferred; run in on_mouse_button */
+            else
+                open_external_url(url);
         }
     });
 

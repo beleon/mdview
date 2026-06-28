@@ -1015,6 +1015,11 @@ int mdv_window_height(mdv_window *w){return ch(w);}
 int mdv_window_surface_width(mdv_window *w){return w->surf_width;}
 int mdv_window_surface_height(mdv_window *w){return w->surf_height;}
 void mdv_window_quit(mdv_window *w){w->running=false;}
+void mdv_window_set_title(mdv_window *w,const char *title){
+    free(w->title);w->title=strdup(title?title:"mdview");
+    if(w->xdg_toplevel)xdg_toplevel_set_title(w->xdg_toplevel,w->title);
+    w->needs_redraw=true;  /* CSD title bar is drawn from w->title */
+}
 void mdv_window_set_tick_enabled(mdv_window *w,bool en){
     w->tick_enabled=en;
     if(w->timerfd>=0){struct itimerspec its={0};if(en){its.it_value.tv_nsec=TICK_MS*1000000L;its.it_interval.tv_nsec=TICK_MS*1000000L;}timerfd_settime(w->timerfd,0,&its,NULL);}

@@ -40,6 +40,7 @@ int          mdv_window_height(mdv_window *win);        /* viewport content h (m
 int          mdv_window_surface_width(mdv_window *win); /* full wl_surface w */
 int          mdv_window_surface_height(mdv_window *win);/* full wl_surface h (incl. CSD title bar) */
 void         mdv_window_quit(mdv_window *win);
+void         mdv_window_set_title(mdv_window *win, const char *title);
 void         mdv_window_copy_to_clipboard(mdv_window *win, const char *text);
 /* Blocking paste from the system clipboard. Returns malloc'd NUL-terminated
    string (caller frees) or NULL if no text clipboard offer is present. */

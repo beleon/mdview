@@ -28,6 +28,7 @@
 - Native Wayland window that gets out of your way
 - Detaches from the shell by default, so your terminal stays free
 - Real Markdown rendering: headings, tables, links, images, anchors, and highlighted code blocks
+- Follow local `.md` links and `[[wiki]]` links in place, with back/forward history
 - Find, live reload, dark mode, zoom, text selection, and outline sidebar
 - Keyboard, mouse, and touchpad-friendly navigation
 - No GTK, Qt, Electron, Tauri, browser engine, or XWayland fallback
@@ -163,6 +164,8 @@ Env vars:
 | `Ctrl+0` | Reset text size + zoom |
 | `Ctrl+T` | Toggle outline (TOC) sidebar |
 | `Ctrl+D` | Toggle dark mode |
+| `Alt+←` / `Backspace` | Back through followed links |
+| `Alt+→` / `Shift+Backspace` | Forward |
 | `F1` / `?` | Toggle help overlay |
 | `q` | Quit |
 | `Escape` | Close find / help / context menu (doesn't quit) |
@@ -174,7 +177,7 @@ Env vars:
 - **Ctrl+wheel** — zoom
 - **Pinch (touchpad)** — zoom
 - **Click + drag** — select text · **double-click** word · **triple-click** line
-- **Click on link** — open in browser, or scroll to `#anchor`
+- **Click on link** — open in browser, scroll to `#anchor`, or follow a local `.md`/wiki link in place (back/forward via `Alt+←`/`Alt+→`)
 - **Right-click** — context menu (Open Link / Copy / Select All / Find / Reload / Toggle Dark)
 - **Title bar drag** — move window (CSD mode) · **double-click** to toggle maximize
 
