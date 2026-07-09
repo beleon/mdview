@@ -272,6 +272,8 @@ struct App {
     /* Track space key state for shift-toggle */
     bool space_held = false;
     int  mouse_x = 0, mouse_y = 0;  /* last known content-area mouse pos */
+    bool pointer_inside = false;    /* false until the pointer enters; mouse_x/y are meaningless before that */
+    std::string hover_href;         /* href under the pointer, shown in the status bar; empty if none */
 
     /* Search */
     bool search_active = false;
@@ -799,18 +801,10 @@ static void draw_status_bar(App *a, cairo_t *cr, int ww, int hh) {
     PangoFontDescription *fd = pango_font_description_from_string("Sans 10");
     pango_layout_set_font_description(l, fd);
 
-    cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
-
-    /* Left: filename */
-    pango_layout_set_text(l, a->file_basename.c_str(), -1);
-    int tw_l = 0, th_l = 0;
-    pango_layout_get_pixel_size(l, &tw_l, &th_l);
-    cairo_move_to(cr, 10, top + (STATUS_H - th_l) / 2.0);
-    pango_cairo_show_layout(cr, l);
-
     /* Right: scroll % · zoom % (+ highlight indicator while jobs are running).
        Scroll % is only meaningful when the doc actually overflows the
-       viewport. When it fits, showing "100%" is misleading, so we omit it. */
+       viewport. When it fits, showing "100%" is misleading, so we omit it.
+       Drawn first so the left slot knows how much room it has left. */
     int zoom_pct = (int)(a->zoom * 100.0 + 0.5);
 
     std::string right;
@@ -824,11 +818,65 @@ static void draw_status_bar(App *a, cairo_t *cr, int ww, int hh) {
         right += std::to_string(scroll_pct) + "%  · ";
     }
     right += std::to_string(zoom_pct) + "%";
+
+    cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
     pango_layout_set_text(l, right.c_str(), -1);
     int rw = 0, rh = 0;
     pango_layout_get_pixel_size(l, &rw, &rh);
     cairo_move_to(cr, ww - rw - 10, top + (STATUS_H - rh) / 2.0);
     pango_cairo_show_layout(cr, l);
+
+    /* Left: the filename, normally alone. While hovering a link the target
+       takes the leading slot and the filename is pushed to its right behind
+       a separator, so the two are never mistaken for each other: the link
+       leads and is drawn at full strength, the filename stays dimmed. */
+    int avail = ww - rw - 30;   /* 10 left pad + 10 gap before right cluster */
+    if (avail < 0) avail = 0;
+
+    if (a->hover_href.empty()) {
+        cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
+        pango_layout_set_width(l, avail * PANGO_SCALE);
+        pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_END);
+        pango_layout_set_text(l, a->file_basename.c_str(), -1);
+        int th_l = 0;
+        pango_layout_get_pixel_size(l, nullptr, &th_l);
+        cairo_move_to(cr, 10, top + (STATUS_H - th_l) / 2.0);
+        pango_cairo_show_layout(cr, l);
+    } else {
+        /* Measure the "  ·  filename" tail first and reserve room for it, so
+           a long href ellipsizes instead of squeezing the filename out. The
+           tail never takes more than half the slot. */
+        std::string tail = "  ·  " + a->file_basename;
+        pango_layout_set_width(l, -1);
+        pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_NONE);
+        pango_layout_set_text(l, tail.c_str(), -1);
+        int tw_t = 0, th_t = 0;
+        pango_layout_get_pixel_size(l, &tw_t, &th_t);
+        if (tw_t > avail / 2) tw_t = avail / 2;
+        int link_max = avail - tw_t;
+        if (link_max < 0) link_max = 0;
+
+        /* Link target, leading and at full strength. */
+        cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
+        pango_layout_set_width(l, link_max * PANGO_SCALE);
+        pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_MIDDLE);
+        pango_layout_set_text(l, a->hover_href.c_str(), -1);
+        int tw_h = 0, th_h = 0;
+        pango_layout_get_pixel_size(l, &tw_h, &th_h);
+        cairo_move_to(cr, 10, top + (STATUS_H - th_h) / 2.0);
+        pango_cairo_show_layout(cr, l);
+
+        /* Separator + filename, dimmed, packed against the link. */
+        cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
+        int rest = avail - tw_h;
+        if (rest < 0) rest = 0;
+        pango_layout_set_width(l, rest * PANGO_SCALE);
+        pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_END);
+        pango_layout_set_text(l, tail.c_str(), -1);
+        pango_layout_get_pixel_size(l, nullptr, &th_t);
+        cairo_move_to(cr, 10 + tw_h, top + (STATUS_H - th_t) / 2.0);
+        pango_cairo_show_layout(cr, l);
+    }
 
     pango_font_description_free(fd);
     g_object_unref(l);
@@ -977,27 +1025,34 @@ static void scroll_to_anchor(App *a, const std::string &id) {
    primary line box. Accuracy is limited but adequate for "is the right
    click on a link?" detection. Returns the href or empty string.
    Iterative DFS; adversarial input can't blow the stack. */
-static std::string href_at(litehtml::element::ptr root, int doc_x, int doc_y) {
-    if (!root) return "";
-    std::vector<litehtml::element::ptr> stack;
-    stack.push_back(root);
-    while (!stack.empty()) {
-        auto el = stack.back();
-        stack.pop_back();
-        if (!el) continue;
+/* href of the <a> the pointer is currently over, or "" if none.
+
+   litehtml owns inline hit-testing: an inline <a> has no single box of its
+   own (its geometry lives in per-line inline boxes, see
+   render_item::is_point_inside), so probing get_placement() misses nearly
+   every Markdown link. Read litehtml's own over-element instead and walk up
+   to the enclosing anchor. That keeps this in lockstep with the "pointer"
+   cursor litehtml reports from the very same hit test. */
+static std::string href_from_over(App *a) {
+    if (!a->doc) return "";
+    std::shared_ptr<const litehtml::element> el = a->doc->get_over_element();
+    while (el) {
         const char *tag = el->get_tagName();
         if (tag && (tag[0] == 'a' || tag[0] == 'A') && tag[1] == '\0') {
-            litehtml::position p = el->get_placement();
-            if (doc_x >= p.x && doc_x < p.x + p.width &&
-                doc_y >= p.y && doc_y < p.y + p.height) {
-                const char *href = el->get_attr("href");
-                if (href) return href;
-            }
+            const char *href = el->get_attr("href");
+            if (href) return href;
         }
-        const auto &kids = el->children();
-        for (auto it = kids.rbegin(); it != kids.rend(); ++it) stack.push_back(*it);
+        el = el->parent();
     }
     return "";
+}
+
+/* Same, for callers holding a point that hasn't been hit-tested yet. */
+static std::string href_at(App *a, int doc_x, int doc_y) {
+    if (!a->doc) return "";
+    std::vector<litehtml::position> rb;
+    a->doc->on_mouse_over(doc_x, doc_y, doc_x, doc_y, rb);
+    return href_from_over(a);
 }
 
 /* Decode %XX percent-escapes. md4c percent-encodes spaces and non-ASCII bytes
@@ -1249,7 +1304,7 @@ static void menu_close(App *a) {
    does the selection contain anything? */
 static void menu_build(App *a, int doc_x, int doc_y) {
     a->menu.items.clear();
-    std::string href = href_at(a->doc ? a->doc->root() : nullptr, doc_x, doc_y);
+    std::string href = href_at(a, doc_x, doc_y);
     if (!href.empty() && href[0] != '#') {
         a->menu.items.push_back({"Open Link",     App::MenuAction::OpenLink, href, true});
         a->menu.items.push_back({"Copy Link URL", App::MenuAction::CopyLink, href, true});
@@ -1530,9 +1585,18 @@ static void extend_selection_drag(App *a, int doc_x, int doc_y) {
     sel.active = true;
 }
 
+/* Update the status-bar link readout, redrawing only when it actually
+   changes so a stationary pointer over a link doesn't churn frames. */
+static void set_hover_href(App *a, mdv_window *w, const std::string &h) {
+    if (a->hover_href == h) return;
+    a->hover_href = h;
+    mdv_window_request_redraw(w);
+}
+
 static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
     App *a = (App*)ud;
     a->mouse_x = x; a->mouse_y = y;
+    a->pointer_inside = true;
 
     /* Drag-selection autoscroll. While a button is held the compositor
        implicitly grabs the pointer to our surface, so motion keeps coming
@@ -1551,6 +1615,7 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
 
     /* Context menu hover: when visible, takes over cursor handling. */
     if (a->menu.visible) {
+        set_hover_href(a, w, "");
         int idx = menu_item_at(a, x, y);
         if (idx != a->menu.hover_idx) {
             a->menu.hover_idx = idx;
@@ -1562,6 +1627,7 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
 
     /* Sidebar hover tracking */
     if (a->toc_visible && x < SIDEBAR_W && y < a->vp_h) {
+        set_hover_href(a, w, "");
         int idx = toc_index_at(a, x, y);
         if (idx != a->toc_hover_idx) {
             a->toc_hover_idx = idx;
@@ -1597,6 +1663,7 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
             mdv_window_request_redraw(w);
         }
         if (new_hover >= 0) {
+            set_hover_href(a, w, "");
             mdv_window_set_cursor(w, "pointer");
             return;
         }
@@ -1608,6 +1675,7 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
        litehtml's set_cursor callback (registered in main) overrides this
        to "pointer" when hovering an <a>, fired from doc->on_mouse_over
        below. */
+    bool in_doc = false;   /* pointer is over the document, not the chrome */
     { SBG sv = sbv(a); SBG sh = sbh(a);
       bool over_sb = (sv.vis && x_eff >= a->vp_w - SB_W)
                   || (sh.vis && y >= a->vp_h - SB_W && y < a->vp_h);
@@ -1621,10 +1689,11 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
           a->search_toggle_hover = new_st_hover;
           mdv_window_request_redraw(w);
       }
-      if (new_st_hover >= 0) { mdv_window_set_cursor(w, "pointer"); return; }
+      if (new_st_hover >= 0) { set_hover_href(a, w, ""); mdv_window_set_cursor(w, "pointer"); return; }
       if (over_sb || over_search_bar || over_status_bar) {
           mdv_window_set_cursor(w, "default");
       } else {
+          in_doc = true;
           int dxd = (int)((x_eff + a->scroll_x) / a->zoom);
           int dyd = (int)((y       + a->scroll_y) / a->zoom);
           mdv_window_set_cursor(w, a->con.find_span_at(dxd, dyd) ? "text" : "default");
@@ -1635,6 +1704,7 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
         /* The out-of-viewport case was caught at the top of this function;
            here we're guaranteed in-viewport, so cancel any prior autoscroll
            and just extend normally. */
+        set_hover_href(a, w, "");   /* dragging a selection isn't hovering */
         a->autoscroll_dir = 0;
         int dx2 = (int)((x_eff + a->scroll_x) / a->zoom);
         int dy2 = (int)((y + a->scroll_y) / a->zoom);
@@ -1643,10 +1713,14 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
         mdv_window_request_redraw(w); return;
     }
 
-    if (!a->doc) return;
+    if (!a->doc) { set_hover_href(a, w, ""); return; }
     int dx2 = (int)((x_eff + a->scroll_x) / a->zoom), dy2 = (int)((y + a->scroll_y) / a->zoom);
     std::vector<litehtml::position> rb;
     if (a->doc->on_mouse_over(dx2, dy2, dx2, dy2, rb)) mdv_window_request_redraw(w);
+
+    /* Status-bar link readout, read straight off the hit test above. */
+    std::string h = in_doc ? href_from_over(a) : std::string();
+    set_hover_href(a, w, h.empty() ? h : percent_decode(h));
 }
 
 static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods, bool pr, int count, void *ud) {
@@ -1821,6 +1895,8 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
 
 static void on_pointer_leave(mdv_window *w, int lx, int ly, void *ud) {
     App *a = (App*)ud; Selection &sel = a->con.selection();
+    a->pointer_inside = false;
+    set_hover_href(a, w, "");   /* nothing is hovered once the pointer is gone */
     if (!sel.dragging) return;
     a->leave_x = (int)((lx - toc_w(a) + a->scroll_x) / a->zoom);
     a->autoscroll_dir = (ly < a->vp_h / 2) ? -1 : 1;
@@ -1829,6 +1905,7 @@ static void on_pointer_leave(mdv_window *w, int lx, int ly, void *ud) {
 
 static void on_pointer_enter(mdv_window *w, int x, int y, void *ud) {
     App *a = (App*)ud; a->autoscroll_dir = 0;
+    a->pointer_inside = true;
     mdv_window_set_tick_enabled(w, tick_on(a));
     Selection &sel = a->con.selection();
     if (sel.dragging) {
@@ -2245,6 +2322,10 @@ static void rerender_doc(App *a) {
     a->doc = litehtml::document::createFromString(a->html.c_str(), &a->con, litehtml::master_css);
     do_layout(a);
     a->match_count_dirty = true;
+    /* The readout named an element of the document we just replaced. Callers
+       that know where the pointer ends up (navigation) re-resolve it after
+       the scroll settles; for the rest, dropping it is the honest answer. */
+    a->hover_href.clear();
 }
 
 static void toggle_dark_mode(App *a, mdv_window *w) {
@@ -2412,6 +2493,26 @@ static bool load_document(App *a, const std::string &abs_path) {
     return true;
 }
 
+/* Re-resolve the status-bar link readout at the pointer's current position.
+   A document swap strands the old readout: no motion event follows the swap,
+   so nothing else would refresh it, and the link that was under the pointer
+   belonged to the document we just dropped. */
+static void refresh_hover_href(App *a) {
+    a->hover_href.clear();
+    if (!a->doc || !a->pointer_inside || a->menu.visible) return;
+    int x = a->mouse_x, y = a->mouse_y;
+    if (a->toc_visible && x < SIDEBAR_W && y < a->vp_h) return;
+    SBG sv = sbv(a), sh = sbh(a);
+    int x_eff = x - toc_w(a);
+    if ((sv.vis && x_eff >= a->vp_w - SB_W)
+     || (sh.vis && y >= a->vp_h - SB_W && y < a->vp_h)
+     || (a->search_active && y < SEARCH_BAR_H)
+     || y >= a->vp_h) return;
+    std::string h = href_at(a, (int)((x_eff + a->scroll_x) / a->zoom),
+                               (int)((y     + a->scroll_y) / a->zoom));
+    if (!h.empty()) a->hover_href = percent_decode(h);
+}
+
 /* Follow a local .md link in place: push onto history (clearing any forward
    entries) and jump to the top of the new document. */
 static void navigate_to(App *a, const std::string &abs_path) {
@@ -2426,6 +2527,7 @@ static void navigate_to(App *a, const std::string &abs_path) {
 
     a->scroll_x = 0; a->scroll_y = 0;
     clamp(a);
+    refresh_hover_href(a);
     if (a->win) mdv_window_request_redraw(a->win);
 }
 
@@ -2441,6 +2543,7 @@ static void history_go(App *a, int dir) {
     a->scroll_x = 0;
     a->scroll_y = a->history[target].scroll_y;
     clamp(a);
+    refresh_hover_href(a);
     if (a->win) mdv_window_request_redraw(a->win);
 }
 
