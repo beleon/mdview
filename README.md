@@ -20,6 +20,13 @@
   <img src="docs/screenshots/hero.png" alt="bat README.md (left) vs mdview README.md (right)" width="600">
 </p>
 
+<p align="center">
+  Hosted on both
+  <a href="https://github.com/beleon/mdview">github.com/beleon/mdview</a>
+  and
+  <a href="https://codefloe.com/beleon/mdview">codefloe.com/beleon/mdview</a>
+</p>
+
 ---
 
 ## Features
