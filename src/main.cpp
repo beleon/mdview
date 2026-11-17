@@ -1,423 +1,462 @@
+#include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cctype>
-#include <string>
 #include <fstream>
 #include <sstream>
-#include <algorithm>
-#include <cmath>
+#include <string>
 #include <vector>
 
+#include <linux/input-event-codes.h>
 #include <signal.h>
 #include <time.h>
-#include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
-#include <linux/input-event-codes.h>
+#include <xkbcommon/xkbcommon.h>
 
-#include "litehtml.h"
 #include "cairo_container.h"
 #include "config.h"
 #include "highlight.h"
 #include "install.h"
-#include "state.h"
+#include "litehtml.h"
 #include "livereload.h"
+#include "state.h"
+using mdv::Chrome;
+using mdv::CHROME_DARK;
+using mdv::CHROME_LIGHT;
+using mdv::Theme;
+using mdv::THEME_DARK;
+using mdv::THEME_LIGHT;
 extern "C" {
 #include "md4c-html.h"
 #include "window.h"
 }
 
-struct Theme {
-    const char *body_bg;        const char *body_color;
-    const char *h_border_strong; const char *h_border_light;
-    const char *code_bg;        const char *code_border;
-    const char *bq_border;      const char *bq_color;
-    const char *link;
-    const char *th_bg;          const char *border;
-    const char *hr_border;
-};
-static const Theme THEME_LIGHT = {
-    "#ffffff", "#222222",
-    "#cccccc", "#eeeeee",
-    "#f4f4f4", "#dddddd",
-    "#dddddd", "#555555",
-    "#0066cc",
-    "#f0f0f0", "#dddddd",
-    "#dddddd"
-};
-static const Theme THEME_DARK = {
-    "#1e1e1e", "#d4d4d4",
-    "#444444", "#333333",
-    "#2a2a2a", "#3a3a3a",
-    "#3a3a3a", "#999999",
-    "#6db5ff",
-    "#2a2a2a", "#3a3a3a",
-    "#3a3a3a"
-};
-
 /* Convert [[Name]] and [[Name|Display]] wiki links to standard Markdown before
    md4c sees the source. Names with spaces use angle-bracket URL syntax so
    md4c parses them correctly. */
 static std::string preprocess_wiki_links(const std::string &md) {
-    std::string out;
-    out.reserve(md.size());
-    size_t i = 0;
-    while (i < md.size()) {
-        if (i + 1 < md.size() && md[i] == '[' && md[i+1] == '[') {
-            size_t end = md.find("]]", i + 2);
-            if (end != std::string::npos) {
-                std::string inner = md.substr(i + 2, end - (i + 2));
-                std::string name = inner, display = inner;
-                size_t pipe = inner.find('|');
-                if (pipe != std::string::npos) {
-                    name    = inner.substr(0, pipe);
-                    display = inner.substr(pipe + 1);
-                }
-                std::string target = name + ".md";
-                bool needs_brackets = target.find(' ') != std::string::npos;
-                out += '[';
-                out += display;
-                out += "](";
-                if (needs_brackets) out += '<';
-                out += target;
-                if (needs_brackets) out += '>';
-                out += ')';
-                i = end + 2;
-                continue;
-            }
+  std::string out;
+  out.reserve(md.size());
+  size_t i = 0;
+  while (i < md.size()) {
+    if (i + 1 < md.size() && md[i] == '[' && md[i + 1] == '[') {
+      size_t end = md.find("]]", i + 2);
+      if (end != std::string::npos) {
+        std::string inner = md.substr(i + 2, end - (i + 2));
+        std::string name = inner, display = inner;
+        size_t pipe = inner.find('|');
+        if (pipe != std::string::npos) {
+          name = inner.substr(0, pipe);
+          display = inner.substr(pipe + 1);
         }
-        out += md[i++];
+        std::string target = name + ".md";
+        bool needs_brackets = target.find(' ') != std::string::npos;
+        out += '[';
+        out += display;
+        out += "](";
+        if (needs_brackets)
+          out += '<';
+        out += target;
+        if (needs_brackets)
+          out += '>';
+        out += ')';
+        i = end + 2;
+        continue;
+      }
     }
-    return out;
+    out += md[i++];
+  }
+  return out;
 }
 
 static std::string md2html(const std::string &md, bool dark, int font_size) {
-    std::string body;
-    std::string processed = preprocess_wiki_links(md);
-    auto cb = [](const MD_CHAR *t, MD_SIZE s, void *u) { static_cast<std::string*>(u)->append(t,s); };
-    if (md_html(processed.c_str(), (MD_SIZE)processed.size(), cb, &body,
-        MD_FLAG_TABLES|MD_FLAG_STRIKETHROUGH|MD_FLAG_TASKLISTS|MD_FLAG_PERMISSIVEAUTOLINKS, 0) != 0)
-        body = "<p style=\"color:#c33\">Error parsing markdown</p>";
+  std::string body;
+  std::string processed = preprocess_wiki_links(md);
+  auto cb = [](const MD_CHAR *t, MD_SIZE s, void *u) {
+    static_cast<std::string *>(u)->append(t, s);
+  };
+  if (md_html(processed.c_str(), (MD_SIZE)processed.size(), cb, &body,
+              MD_FLAG_TABLES | MD_FLAG_STRIKETHROUGH | MD_FLAG_TASKLISTS |
+                  MD_FLAG_PERMISSIVEAUTOLINKS,
+              0) != 0)
+    body = "<p style=\"color:#c33\">Error parsing markdown</p>";
 
-    const Theme &t = dark ? THEME_DARK : THEME_LIGHT;
-    /* All text-related sizes (headings, code, margins, paddings) scale
-       proportionally with body font-size. We compute absolute px values
-       up front because litehtml's em/rem semantics differ subtly from
-       what we want (em on margins is relative to the element's own
-       font-size, not the body's, so plain em-based CSS would blow up
-       h1 margins). */
-    double sf = font_size / 16.0;
-    auto sc = [sf](int px) { return (int)(px * sf + 0.5); };
+  const Theme &t = dark ? THEME_DARK : THEME_LIGHT;
+  /* All text-related sizes (headings, code, margins, paddings) scale
+     proportionally with body font-size. We compute absolute px values
+     up front because litehtml's em/rem semantics differ subtly from
+     what we want (em on margins is relative to the element's own
+     font-size, not the body's, so plain em-based CSS would blow up
+     h1 margins). */
+  double sf = font_size / 16.0;
+  auto sc = [sf](int px) { return (int)(px * sf + 0.5); };
 
-    char css[2560];
-    snprintf(css, sizeof(css),
-        "body{font-family:Sans;font-size:%dpx;line-height:1.6;color:%s;background:%s;padding:%dpx}"
-        "h1{font-size:%dpx;margin-top:%dpx;margin-bottom:%dpx;border-bottom:1px solid %s;padding-bottom:%dpx}"
-        "h2{font-size:%dpx;margin-top:%dpx;margin-bottom:%dpx;border-bottom:1px solid %s;padding-bottom:%dpx}"
-        "h3{font-size:%dpx;margin-top:%dpx;margin-bottom:%dpx}"
-        "h4{font-size:%dpx;margin-top:%dpx;margin-bottom:%dpx}"
-        "p{margin-top:%dpx;margin-bottom:%dpx}"
-        "code{background-color:%s;padding:2px 4px;font-family:Monospace;font-size:%dpx}"
-        "pre{background-color:%s;padding:%dpx;font-family:Monospace;font-size:%dpx;border:1px solid %s}"
-        "pre code{padding:0;background-color:transparent}"
-        "blockquote{margin-left:0;padding-left:%dpx;border-left:4px solid %s;color:%s}"
-        "a{color:%s}table{border-collapse:collapse;margin:%dpx 0}"
-        "th,td{border:1px solid %s;padding:%dpx}th{background-color:%s;font-weight:bold}"
-        "ul,ol{padding-left:%dpx}li{margin-bottom:%dpx}"
-        "hr{border:none;border-top:1px solid %s;margin:%dpx 0}"
-        "del{text-decoration:line-through}img{max-width:100%%}",
-        font_size, t.body_color, t.body_bg, sc(20),
-        sc(32), sc(24), sc(12), t.h_border_strong, sc(8),
-        sc(26), sc(20), sc(10), t.h_border_light, sc(6),
-        sc(22), sc(16), sc(8),
-        sc(18), sc(14), sc(6),
-        sc(8), sc(8),
-        t.code_bg, sc(14),
-        t.code_bg, sc(12), sc(14), t.code_border,
-        sc(16), t.bq_border, t.bq_color,
-        t.link, sc(12),
-        t.border, sc(8), t.th_bg,
-        sc(24), sc(4),
-        t.hr_border, sc(16));
-    return std::string("<html><head><style>") + css + "</style></head><body>" + body + "</body></html>";
+  char css[2560];
+  snprintf(css, sizeof(css),
+           "body{font-family:Sans;font-size:%dpx;line-height:1.6;color:%s;"
+           "background:%s;padding:%dpx}"
+           "h1{font-size:%dpx;margin-top:%dpx;margin-bottom:%dpx;border-bottom:"
+           "1px solid %s;padding-bottom:%dpx}"
+           "h2{font-size:%dpx;margin-top:%dpx;margin-bottom:%dpx;border-bottom:"
+           "1px solid %s;padding-bottom:%dpx}"
+           "h3{font-size:%dpx;margin-top:%dpx;margin-bottom:%dpx}"
+           "h4{font-size:%dpx;margin-top:%dpx;margin-bottom:%dpx}"
+           "p{margin-top:%dpx;margin-bottom:%dpx}"
+           "code{background-color:%s;padding:2px "
+           "4px;font-family:Monospace;font-size:%dpx}"
+           "pre{background-color:%s;padding:%dpx;font-family:Monospace;font-"
+           "size:%dpx;border:1px solid %s}"
+           "pre code{padding:0;background-color:transparent}"
+           "blockquote{margin-left:0;padding-left:%dpx;border-left:4px solid "
+           "%s;color:%s}"
+           "a{color:%s}table{border-collapse:collapse;margin:%dpx 0}"
+           "th,td{border:1px solid "
+           "%s;padding:%dpx}th{background-color:%s;font-weight:bold}"
+           "ul,ol{padding-left:%dpx}li{margin-bottom:%dpx}"
+           "hr{border:none;border-top:1px solid %s;margin:%dpx 0}"
+           "del{text-decoration:line-through}img{max-width:100%%}",
+           font_size, t.body_color.c_str(), t.body_bg.c_str(), sc(20), sc(32),
+           sc(24), sc(12), t.h_border_strong.c_str(), sc(8), sc(26), sc(20),
+           sc(10), t.h_border_light.c_str(), sc(6), sc(22), sc(16), sc(8),
+           sc(18), sc(14), sc(6), sc(8), sc(8), t.code_bg.c_str(), sc(14),
+           t.code_bg.c_str(), sc(12), sc(14), t.code_border.c_str(), sc(16),
+           t.bq_border.c_str(), t.bq_color.c_str(), t.link.c_str(), sc(12),
+           t.border.c_str(), sc(8), t.th_bg.c_str(), sc(24), sc(4),
+           t.hr_border.c_str(), sc(16));
+  return std::string("<html><head><style>") + css + "</style></head><body>" +
+         body + "</body></html>";
 }
 
 /* GitHub-ish slug: lowercase, alphanumerics kept, runs of other chars
    collapse to a single '-'. Used to give headings stable #ids for
    in-document anchor links. */
 static std::string slugify(const std::string &s) {
-    std::string out;
-    out.reserve(s.size());
-    bool prev_dash = false;
-    for (char c : s) {
-        unsigned char u = (unsigned char)c;
-        if (isalnum(u)) {
-            out += (char)tolower(u);
-            prev_dash = false;
-        } else if (u >= 0x80) {
-            out += c;          /* keep multibyte UTF-8 verbatim */
-            prev_dash = false;
-        } else {
-            if (!prev_dash && !out.empty()) out += '-';
-            prev_dash = true;
-        }
+  std::string out;
+  out.reserve(s.size());
+  bool prev_dash = false;
+  for (char c : s) {
+    unsigned char u = (unsigned char)c;
+    if (isalnum(u)) {
+      out += (char)tolower(u);
+      prev_dash = false;
+    } else if (u >= 0x80) {
+      out += c; /* keep multibyte UTF-8 verbatim */
+      prev_dash = false;
+    } else {
+      if (!prev_dash && !out.empty())
+        out += '-';
+      prev_dash = true;
     }
-    while (!out.empty() && out.back() == '-') out.pop_back();
-    return out;
+  }
+  while (!out.empty() && out.back() == '-')
+    out.pop_back();
+  return out;
 }
 
 /* Walk the HTML string and inject id="slug-of-text" into each <hN> opening
    tag that doesn't already have one. Duplicate slugs get -2, -3, ... */
 static std::string add_heading_ids(const std::string &html) {
-    std::string out;
-    out.reserve(html.size() + 128);
-    std::map<std::string, int> seen;
-    size_t pos = 0;
-    while (pos < html.size()) {
-        char c3 = (pos + 3 < html.size()) ? html[pos+3] : '\0';
-        bool is_hN_open = pos + 3 < html.size()
-                       && html[pos] == '<' && html[pos+1] == 'h'
-                       && html[pos+2] >= '1' && html[pos+2] <= '6'
-                       && (c3 == '>' || c3 == ' ' || c3 == '\t'
-                        || c3 == '\n' || c3 == '\r');
-        if (is_hN_open) {
-            char level = html[pos+2];
-            char close = '>';
-            size_t open_end = html.find(close, pos);
-            if (open_end == std::string::npos) { out += html[pos++]; continue; }
-            std::string opening = html.substr(pos, open_end - pos + 1);
-            bool has_id = opening.find(" id=") != std::string::npos
-                       || opening.find("\tid=") != std::string::npos;
-            std::string end_tag = "</h"; end_tag += level; end_tag += ">";
-            size_t close_pos = html.find(end_tag, open_end + 1);
-            if (close_pos == std::string::npos) { out += html[pos++]; continue; }
-            std::string inner = html.substr(open_end + 1, close_pos - open_end - 1);
+  std::string out;
+  out.reserve(html.size() + 128);
+  std::map<std::string, int> seen;
+  size_t pos = 0;
+  while (pos < html.size()) {
+    char c3 = (pos + 3 < html.size()) ? html[pos + 3] : '\0';
+    bool is_hN_open =
+        pos + 3 < html.size() && html[pos] == '<' && html[pos + 1] == 'h' &&
+        html[pos + 2] >= '1' && html[pos + 2] <= '6' &&
+        (c3 == '>' || c3 == ' ' || c3 == '\t' || c3 == '\n' || c3 == '\r');
+    if (is_hN_open) {
+      char level = html[pos + 2];
+      char close = '>';
+      size_t open_end = html.find(close, pos);
+      if (open_end == std::string::npos) {
+        out += html[pos++];
+        continue;
+      }
+      std::string opening = html.substr(pos, open_end - pos + 1);
+      bool has_id = opening.find(" id=") != std::string::npos ||
+                    opening.find("\tid=") != std::string::npos;
+      std::string end_tag = "</h";
+      end_tag += level;
+      end_tag += ">";
+      size_t close_pos = html.find(end_tag, open_end + 1);
+      if (close_pos == std::string::npos) {
+        out += html[pos++];
+        continue;
+      }
+      std::string inner = html.substr(open_end + 1, close_pos - open_end - 1);
 
-            if (!has_id) {
-                /* Strip nested tags + decode entities for slug input. */
-                std::string text;
-                bool in_tag = false;
-                for (char c : inner) {
-                    if (c == '<') in_tag = true;
-                    else if (c == '>') in_tag = false;
-                    else if (!in_tag) text += c;
-                }
-                text = mdv::html_decode(text);
-                std::string slug = slugify(text);
-                if (!slug.empty()) {
-                    int n = ++seen[slug];
-                    std::string final_slug = (n == 1) ? slug : (slug + "-" + std::to_string(n));
-                    /* Insert id attribute just before the closing '>'. */
-                    out.append(opening, 0, opening.size() - 1);
-                    out += " id=\"";
-                    out += final_slug;
-                    out += "\">";
-                } else {
-                    out += opening;
-                }
-            } else {
-                out += opening;
-            }
-            out += inner;
-            out += end_tag;
-            pos = close_pos + end_tag.size();
-        } else {
-            out += html[pos++];
+      if (!has_id) {
+        /* Strip nested tags + decode entities for slug input. */
+        std::string text;
+        bool in_tag = false;
+        for (char c : inner) {
+          if (c == '<')
+            in_tag = true;
+          else if (c == '>')
+            in_tag = false;
+          else if (!in_tag)
+            text += c;
         }
+        text = mdv::html_decode(text);
+        std::string slug = slugify(text);
+        if (!slug.empty()) {
+          int n = ++seen[slug];
+          std::string final_slug =
+              (n == 1) ? slug : (slug + "-" + std::to_string(n));
+          /* Insert id attribute just before the closing '>'. */
+          out.append(opening, 0, opening.size() - 1);
+          out += " id=\"";
+          out += final_slug;
+          out += "\">";
+        } else {
+          out += opening;
+        }
+      } else {
+        out += opening;
+      }
+      out += inner;
+      out += end_tag;
+      pos = close_pos + end_tag.size();
+    } else {
+      out += html[pos++];
     }
-    return out;
+  }
+  return out;
 }
 
 /* ========================================================================= */
 
-static constexpr int    SB_W = 8;
+static constexpr int SB_W = 8;
 static constexpr double SB_MIN = 20.0;
-static constexpr int    AUTOSCROLL_SPD = 8;
+static constexpr int AUTOSCROLL_SPD = 8;
 static constexpr double KEY_SPD = 4.0, PAGE_SPD = 30.0;
 static constexpr double ZOOM_MIN = 1.0, ZOOM_MAX = 5.0, ZOOM_STEP = 0.1;
-static constexpr int    FONT_SIZE_DEFAULT = 16;
-static constexpr int    FONT_SIZE_MIN     = 8;
-static constexpr int    FONT_SIZE_MAX     = 48;
-static constexpr int    FONT_SIZE_STEP    = 1;
-static constexpr int    SEARCH_BAR_H = 36;
-static constexpr int    STATUS_H = 22;
-static constexpr int    SIDEBAR_W = 280;
-static constexpr int    TOC_LINE_H = 22;
-static constexpr int    TOC_PAD_TOP = 10;
-static constexpr int    COPY_BTN_W = 60;
-static constexpr int    COPY_BTN_H = 22;
-static constexpr int    COPY_BTN_PAD = 6;
-static constexpr long   COPIED_FEEDBACK_MS = 1500;
+static constexpr int FONT_SIZE_DEFAULT = 16;
+static constexpr int FONT_SIZE_MIN = 8;
+static constexpr int FONT_SIZE_MAX = 48;
+static constexpr int FONT_SIZE_STEP = 1;
+static constexpr int SEARCH_BAR_H = 36;
+static constexpr int STATUS_H = 22;
+static constexpr int SIDEBAR_W = 280;
+static constexpr int TOC_LINE_H = 22;
+static constexpr int TOC_PAD_TOP = 10;
+static constexpr int COPY_BTN_W = 60;
+static constexpr int COPY_BTN_H = 22;
+static constexpr int COPY_BTN_PAD = 6;
+static constexpr long COPIED_FEEDBACK_MS = 1500;
 
 /* ========================================================================= */
 
 struct App {
-    CairoContainer con;
-    litehtml::document::ptr doc;
-    std::string html;
+  CairoContainer con;
+  litehtml::document::ptr doc;
+  std::string html;
 
-    double scroll_x = 0, scroll_y = 0;
-    int doc_w = 0, doc_h = 0;     /* document dims at zoom=1 */
-    int vp_w = 900, vp_h = 700;
-    double zoom = 1.0;
-    double pinch_base_zoom = 1.0;
-    int font_size = FONT_SIZE_DEFAULT;   /* body font-size in px; Ctrl+± adjust */
+  double scroll_x = 0, scroll_y = 0;
+  int doc_w = 0, doc_h = 0; /* document dims at zoom=1 */
+  int vp_w = 900, vp_h = 700;
+  double zoom = 1.0;
+  double pinch_base_zoom = 1.0;
+  int font_size = FONT_SIZE_DEFAULT; /* body font-size in px; Ctrl+± adjust */
 
-    bool sb_v_drag = false, sb_h_drag = false;
-    double sb_drag_off = 0;
-    int autoscroll_dir = 0, leave_x = 0;
-    double scroll_vel = 0;
-    bool key_scrolling = false;
+  bool sb_v_drag = false, sb_h_drag = false;
+  double sb_drag_off = 0;
+  int autoscroll_dir = 0, leave_x = 0;
+  double scroll_vel = 0;
+  bool key_scrolling = false;
 
-    /* Track space key state for shift-toggle */
-    bool space_held = false;
-    int  mouse_x = 0, mouse_y = 0;  /* last known content-area mouse pos */
-    bool pointer_inside = false;    /* false until the pointer enters; mouse_x/y are meaningless before that */
-    std::string hover_href;         /* href under the pointer, shown in the status bar; empty if none */
+  /* Track space key state for shift-toggle */
+  bool space_held = false;
+  int mouse_x = 0, mouse_y = 0; /* last known content-area mouse pos */
+  bool pointer_inside = false;  /* false until the pointer enters; mouse_x/y are
+                                   meaningless before that */
+  std::string hover_href; /* href under the pointer, shown in the status bar;
+                             empty if none */
 
-    /* Search */
-    bool search_active = false;
-    bool case_sensitive = false;
-    bool whole_word = false;
-    bool regex_mode = false;
-    /* Find-bar mode toggle buttons. Rects populated by draw_search_bar each
-       paint (in window-space coords matching on_mouse_*) so mouse handlers
-       can hit-test. Index: 0=case, 1=whole_word, 2=regex. */
-    struct SearchToggleRect { int x, y, w, h; };
-    SearchToggleRect search_toggle_rects[3] = {};
-    int              search_toggle_hover    = -1;
-    std::string search_query;
-    /* Insertion-point byte offset within search_query. Always lands on a UTF-8
-       codepoint boundary; the movement/edit helpers enforce that. */
-    int search_cursor = 0;
-    /* Selection anchor; -1 means no active selection. When ≥ 0, the selection
-       is [min(anchor, cursor), max(anchor, cursor)). */
-    int search_anchor = -1;
-    std::vector<SearchHit> search_matches;
-    int current_match = -1;
-    bool match_count_dirty = true;  /* re-run find_matches on next render */
+  /* Search */
+  bool search_active = false;
+  bool case_sensitive = false;
+  bool whole_word = false;
+  bool regex_mode = false;
+  /* Find-bar mode toggle buttons. Rects populated by draw_search_bar each
+     paint (in window-space coords matching on_mouse_*) so mouse handlers
+     can hit-test. Index: 0=case, 1=whole_word, 2=regex. */
+  struct SearchToggleRect {
+    int x, y, w, h;
+  };
+  SearchToggleRect search_toggle_rects[3] = {};
+  int search_toggle_hover = -1;
+  std::string search_query;
+  /* Insertion-point byte offset within search_query. Always lands on a UTF-8
+     codepoint boundary; the movement/edit helpers enforce that. */
+  int search_cursor = 0;
+  /* Selection anchor; -1 means no active selection. When ≥ 0, the selection
+     is [min(anchor, cursor), max(anchor, cursor)). */
+  int search_anchor = -1;
+  std::vector<SearchHit> search_matches;
+  int current_match = -1;
+  bool match_count_dirty = true; /* re-run find_matches on next render */
 
-    /* Syntax highlighting (async via subprocess) */
-    std::string original_html;   /* pre-highlight, kept for rebuild substitution */
-    mdv::Highlighter highlighter;
+  /* Syntax highlighting (async via subprocess) */
+  std::string original_html; /* pre-highlight, kept for rebuild substitution */
+  mdv::Highlighter highlighter;
 
-    /* Window handle (set after creation) */
-    mdv_window *win = nullptr;
+  /* Window handle (set after creation) */
+  mdv_window *win = nullptr;
 
-    /* Help overlay */
-    bool   help_visible   = false;
-    double help_scroll_y  = 0;  /* px; clamped on each draw */
+  /* Help overlay */
+  bool help_visible = false;
+  double help_scroll_y = 0; /* px; clamped on each draw */
 
-    /* CLI flags stashed for the deferred-init path. The highlighter probe
-       and inotify watcher are kicked off in on_first_frame, not before. */
-    bool   arg_no_highlight = false;
-    bool   arg_no_reload    = false;
+  /* CLI flags stashed for the deferred-init path. The highlighter probe
+     and inotify watcher are kicked off in on_first_frame, not before. */
+  bool arg_no_highlight = false;
+  bool arg_no_reload = false;
 
-    /* Startup-phase timestamps. Always captured (overhead is nil); printed
-       to stderr from on_first_frame when MDVIEW_DEBUG=1. */
-    struct {
-        struct timespec t_start       = {};  /* after argv parse */
-        struct timespec t_after_read  = {};  /* after file read */
-        struct timespec t_after_state = {};  /* after state+config+realpath */
-        struct timespec t_after_md    = {};  /* after md2html + ids + toc */
-        struct timespec t_after_doc   = {};  /* after litehtml createFromString */
-        struct timespec t_after_create= {};  /* after mdv_window_create */
-    } perf;
+  /* Startup-phase timestamps. Always captured (overhead is nil); printed
+     to stderr from on_first_frame when MDVIEW_DEBUG=1. */
+  struct {
+    struct timespec t_start = {};        /* after argv parse */
+    struct timespec t_after_read = {};   /* after file read */
+    struct timespec t_after_state = {};  /* after state+config+realpath */
+    struct timespec t_after_md = {};     /* after md2html + ids + toc */
+    struct timespec t_after_doc = {};    /* after litehtml createFromString */
+    struct timespec t_after_create = {}; /* after mdv_window_create */
+  } perf;
 
-    /* File + live reload */
-    std::string file_path;
-    std::string file_basename;
-    std::string source_md;     /* raw markdown source (for dark-mode + reload re-render) */
-    mdv::LiveReloader live_reloader;
+  /* File + live reload */
+  std::string file_path;
+  std::string file_basename;
+  std::string
+      source_md; /* raw markdown source (for dark-mode + reload re-render) */
+  mdv::LiveReloader live_reloader;
 
-    /* Linear back/forward history of followed local .md links. Each entry
-       remembers its scroll position. hist_idx points at the current file;
-       navigating to a new link truncates any forward entries. */
-    struct HistEntry { std::string path; double scroll_y; };
-    std::vector<HistEntry> history;
-    int                    hist_idx = -1;
-    /* A link click fires on_anchor_click from inside litehtml's dispatch.
-       Navigating there would rebuild a->doc and free the document mid-call,
-       so the click handler queues the target here and runs it afterwards. */
-    std::string            pending_nav;
+  /* Linear back/forward history of followed local .md links. Each entry
+     remembers its scroll position. hist_idx points at the current file;
+     navigating to a new link truncates any forward entries. */
+  struct HistEntry {
+    std::string path;
+    double scroll_y;
+  };
+  std::vector<HistEntry> history;
+  int hist_idx = -1;
+  /* A link click fires on_anchor_click from inside litehtml's dispatch.
+     Navigating there would rebuild a->doc and free the document mid-call,
+     so the click handler queues the target here and runs it afterwards. */
+  std::string pending_nav;
 
-    /* Theme */
-    bool dark_mode = false;
+  /* Theme */
+  bool dark_mode = false;
 
-    /* TOC sidebar */
-    struct TocEntry { int level; std::string text; std::string id; };
-    bool                  toc_visible = false;
-    std::vector<TocEntry> toc_entries;
-    double                toc_scroll_y = 0;
-    int                   toc_hover_idx = -1;
+  /* TOC sidebar */
+  struct TocEntry {
+    int level;
+    std::string text;
+    std::string id;
+  };
+  bool toc_visible = false;
+  std::vector<TocEntry> toc_entries;
+  double toc_scroll_y = 0;
+  int toc_hover_idx = -1;
 
-    /* Copy-button overlays on <pre> blocks. Positions are doc-space; the
-       overlay is drawn in viewport space at constant size regardless of
-       zoom. Populated post-layout. After a successful copy, the button's
-       label flips to "Copied!" until COPIED_FEEDBACK_MS has elapsed. */
-    struct CodeBlockHit { int x, y, w, h; std::string text; };
-    std::vector<CodeBlockHit> code_blocks;
-    int                       code_button_hover = -1;
-    int                       code_copied_idx   = -1;
-    struct timespec           code_copied_at    = {};
+  /* Copy-button overlays on <pre> blocks. Positions are doc-space; the
+     overlay is drawn in viewport space at constant size regardless of
+     zoom. Populated post-layout. After a successful copy, the button's
+     label flips to "Copied!" until COPIED_FEEDBACK_MS has elapsed. */
+  struct CodeBlockHit {
+    int x, y, w, h;
+    std::string text;
+  };
+  std::vector<CodeBlockHit> code_blocks;
+  int code_button_hover = -1;
+  int code_copied_idx = -1;
+  struct timespec code_copied_at = {};
 
-    /* Right-click context menu (drawn as an in-window overlay) */
-    enum class MenuAction { OpenLink, CopyLink, Copy, SelectAll, Find, Reload, ToggleDark };
-    struct MenuItem { std::string label; MenuAction action; std::string param; bool enabled; };
-    struct ContextMenu {
-        bool visible = false;
-        int x = 0, y = 0, w = 0, h = 0;
-        int hover_idx = -1;
-        std::vector<MenuItem> items;
-    } menu;
+  /* Right-click context menu (drawn as an in-window overlay) */
+  enum class MenuAction {
+    OpenLink,
+    CopyLink,
+    Copy,
+    SelectAll,
+    Find,
+    Reload,
+    ToggleDark
+  };
+  struct MenuItem {
+    std::string label;
+    MenuAction action;
+    std::string param;
+    bool enabled;
+  };
+  struct ContextMenu {
+    bool visible = false;
+    int x = 0, y = 0, w = 0, h = 0;
+    int hover_idx = -1;
+    std::vector<MenuItem> items;
+  } menu;
 };
 
-static int max_sy(App *a) { return std::max(0, (int)(a->doc_h * a->zoom) - a->vp_h); }
-static int max_sx(App *a) { return std::max(0, (int)(a->doc_w * a->zoom) - a->vp_w); }
-static int toc_w(App *a)  { return a->toc_visible ? SIDEBAR_W : 0; }
+static int max_sy(App *a) {
+  return std::max(0, (int)(a->doc_h * a->zoom) - a->vp_h);
+}
+static int max_sx(App *a) {
+  return std::max(0, (int)(a->doc_w * a->zoom) - a->vp_w);
+}
+static int toc_w(App *a) { return a->toc_visible ? SIDEBAR_W : 0; }
 
 /* Parse <h1..h3 id="..">text</hN> out of the HTML and return a flat list.
    Run on the post-add_heading_ids string so every heading has an id. */
 static std::vector<App::TocEntry> extract_toc(const std::string &html) {
-    std::vector<App::TocEntry> r;
-    size_t pos = 0;
-    while (pos < html.size()) {
-        char c3 = (pos + 3 < html.size()) ? html[pos+3] : '\0';
-        bool is_hN_open = pos + 3 < html.size()
-                       && html[pos] == '<' && html[pos+1] == 'h'
-                       && html[pos+2] >= '1' && html[pos+2] <= '3'
-                       && (c3 == '>' || c3 == ' ' || c3 == '\t'
-                        || c3 == '\n' || c3 == '\r');
-        if (is_hN_open) {
-            int level = html[pos+2] - '0';
-            size_t open_end = html.find('>', pos);
-            if (open_end == std::string::npos) break;
-            std::string opening = html.substr(pos, open_end - pos + 1);
-            std::string id;
-            size_t id_pos = opening.find(" id=\"");
-            if (id_pos != std::string::npos) {
-                size_t id_end = opening.find('"', id_pos + 5);
-                if (id_end != std::string::npos) id = opening.substr(id_pos + 5, id_end - id_pos - 5);
-            }
-            std::string end_tag = "</h"; end_tag += html[pos+2]; end_tag += ">";
-            size_t close = html.find(end_tag, open_end);
-            if (close == std::string::npos) break;
-            std::string raw = html.substr(open_end + 1, close - open_end - 1);
-            std::string text;
-            bool in_tag = false;
-            for (char c : raw) {
-                if (c == '<')      in_tag = true;
-                else if (c == '>') in_tag = false;
-                else if (!in_tag)  text += c;
-            }
-            text = mdv::html_decode(text);
-            r.push_back({level, std::move(text), std::move(id)});
-            pos = close + end_tag.size();
-        } else {
-            pos++;
-        }
+  std::vector<App::TocEntry> r;
+  size_t pos = 0;
+  while (pos < html.size()) {
+    char c3 = (pos + 3 < html.size()) ? html[pos + 3] : '\0';
+    bool is_hN_open =
+        pos + 3 < html.size() && html[pos] == '<' && html[pos + 1] == 'h' &&
+        html[pos + 2] >= '1' && html[pos + 2] <= '3' &&
+        (c3 == '>' || c3 == ' ' || c3 == '\t' || c3 == '\n' || c3 == '\r');
+    if (is_hN_open) {
+      int level = html[pos + 2] - '0';
+      size_t open_end = html.find('>', pos);
+      if (open_end == std::string::npos)
+        break;
+      std::string opening = html.substr(pos, open_end - pos + 1);
+      std::string id;
+      size_t id_pos = opening.find(" id=\"");
+      if (id_pos != std::string::npos) {
+        size_t id_end = opening.find('"', id_pos + 5);
+        if (id_end != std::string::npos)
+          id = opening.substr(id_pos + 5, id_end - id_pos - 5);
+      }
+      std::string end_tag = "</h";
+      end_tag += html[pos + 2];
+      end_tag += ">";
+      size_t close = html.find(end_tag, open_end);
+      if (close == std::string::npos)
+        break;
+      std::string raw = html.substr(open_end + 1, close - open_end - 1);
+      std::string text;
+      bool in_tag = false;
+      for (char c : raw) {
+        if (c == '<')
+          in_tag = true;
+        else if (c == '>')
+          in_tag = false;
+        else if (!in_tag)
+          text += c;
+      }
+      text = mdv::html_decode(text);
+      r.push_back({level, std::move(text), std::move(id)});
+      pos = close + end_tag.size();
+    } else {
+      pos++;
     }
-    return r;
+  }
+  return r;
 }
 
 /* Firefox-pinch-zoom-style clamping. Strict on both axes: no whitespace
@@ -426,15 +465,19 @@ static std::vector<App::TocEntry> extract_toc(const std::string &html) {
    into whitespace; clamp pulls it back, accepting the resulting
    focus-point drift in the edge case. */
 static void clamp(App *a) {
-    double cw = a->doc_w * a->zoom, ch = a->doc_h * a->zoom;
-    if (cw <= a->vp_w) a->scroll_x = 0;
-    else               a->scroll_x = std::clamp(a->scroll_x, 0.0, cw - a->vp_w);
-    if (ch <= a->vp_h) a->scroll_y = 0;
-    else               a->scroll_y = std::clamp(a->scroll_y, 0.0, ch - a->vp_h);
+  double cw = a->doc_w * a->zoom, ch = a->doc_h * a->zoom;
+  if (cw <= a->vp_w)
+    a->scroll_x = 0;
+  else
+    a->scroll_x = std::clamp(a->scroll_x, 0.0, cw - a->vp_w);
+  if (ch <= a->vp_h)
+    a->scroll_y = 0;
+  else
+    a->scroll_y = std::clamp(a->scroll_y, 0.0, ch - a->vp_h);
 }
 
 static bool tick_on(App *a) {
-    return a->key_scrolling || a->autoscroll_dir != 0 || a->code_copied_idx >= 0;
+  return a->key_scrolling || a->autoscroll_dir != 0 || a->code_copied_idx >= 0;
 }
 
 /* Iterative DFS for <pre> elements, gathering their on-screen positions in
@@ -442,49 +485,54 @@ static bool tick_on(App *a) {
    of the block we're already capturing). */
 static void collect_pre_positions(litehtml::element::ptr root,
                                   std::vector<litehtml::position> &out) {
-    if (!root) return;
-    std::vector<litehtml::element::ptr> stack;
-    stack.push_back(root);
-    while (!stack.empty()) {
-        auto el = stack.back(); stack.pop_back();
-        if (!el) continue;
-        const char *tag = el->get_tagName();
-        if (tag && strcmp(tag, "pre") == 0) {
-            out.push_back(el->get_placement());
-            continue;
-        }
-        const auto &kids = el->children();
-        for (auto it = kids.rbegin(); it != kids.rend(); ++it) stack.push_back(*it);
+  if (!root)
+    return;
+  std::vector<litehtml::element::ptr> stack;
+  stack.push_back(root);
+  while (!stack.empty()) {
+    auto el = stack.back();
+    stack.pop_back();
+    if (!el)
+      continue;
+    const char *tag = el->get_tagName();
+    if (tag && strcmp(tag, "pre") == 0) {
+      out.push_back(el->get_placement());
+      continue;
     }
+    const auto &kids = el->children();
+    for (auto it = kids.rbegin(); it != kids.rend(); ++it)
+      stack.push_back(*it);
+  }
 }
 
 static void do_layout(App *a) {
-    if (!a->doc) return;
-    a->con.set_viewport(a->vp_w, a->vp_h);
-    a->doc->render(a->vp_w, litehtml::render_all);
-    a->doc_w = a->doc->width();
-    a->doc_h = a->doc->height();
-    a->match_count_dirty = true;  /* layout changed → positions invalid */
-    /* Re-collect code-block positions whenever layout changes. Sources of
-       layout change include zoom, font-size, dark-mode reshade, live reload. */
-    {
-        std::vector<litehtml::position> positions;
-        collect_pre_positions(a->doc->root(), positions);
-        auto blocks = mdv::extract_code_blocks(a->original_html);
-        a->code_blocks.clear();
-        a->code_blocks.reserve(positions.size());
-        for (size_t i = 0; i < positions.size() && i < blocks.size(); i++) {
-            App::CodeBlockHit hit;
-            hit.x = positions[i].x;
-            hit.y = positions[i].y;
-            hit.w = positions[i].width;
-            hit.h = positions[i].height;
-            hit.text = blocks[i].raw_content;
-            a->code_blocks.push_back(std::move(hit));
-        }
-        a->code_button_hover = -1;
+  if (!a->doc)
+    return;
+  a->con.set_viewport(a->vp_w, a->vp_h);
+  a->doc->render(a->vp_w, litehtml::render_all);
+  a->doc_w = a->doc->width();
+  a->doc_h = a->doc->height();
+  a->match_count_dirty = true; /* layout changed → positions invalid */
+  /* Re-collect code-block positions whenever layout changes. Sources of
+     layout change include zoom, font-size, dark-mode reshade, live reload. */
+  {
+    std::vector<litehtml::position> positions;
+    collect_pre_positions(a->doc->root(), positions);
+    auto blocks = mdv::extract_code_blocks(a->original_html);
+    a->code_blocks.clear();
+    a->code_blocks.reserve(positions.size());
+    for (size_t i = 0; i < positions.size() && i < blocks.size(); i++) {
+      App::CodeBlockHit hit;
+      hit.x = positions[i].x;
+      hit.y = positions[i].y;
+      hit.w = positions[i].width;
+      hit.h = positions[i].height;
+      hit.text = blocks[i].raw_content;
+      a->code_blocks.push_back(std::move(hit));
     }
-    clamp(a);
+    a->code_button_hover = -1;
+  }
+  clamp(a);
 }
 
 /* Focus-point zoom, Google-Maps style. The doc point at viewport position
@@ -493,45 +541,57 @@ static void do_layout(App *a) {
    viewport, clamp() may pull the result to a valid range, which accepts a
    small focus-point drift as the price of not showing whitespace where
    content used to be. */
-static double zoom_axis(double scroll, double old_zoom, double new_zoom, int focus) {
-    double doc_pt = (scroll + focus) / old_zoom;
-    return doc_pt * new_zoom - focus;
+static double zoom_axis(double scroll, double old_zoom, double new_zoom,
+                        int focus) {
+  double doc_pt = (scroll + focus) / old_zoom;
+  return doc_pt * new_zoom - focus;
 }
 
 static void apply_zoom(App *a, double nz, int fx, int fy) {
-    nz = std::clamp(nz, ZOOM_MIN, ZOOM_MAX);
-    if (std::abs(nz - a->zoom) < 0.001) return;
-    double oz = a->zoom;
-    a->scroll_x = zoom_axis(a->scroll_x, oz, nz, fx);
-    a->scroll_y = zoom_axis(a->scroll_y, oz, nz, fy);
-    a->zoom = nz;
-    a->match_count_dirty = true;  /* font sizes unchanged but x positions scaled inside spans */
-    clamp(a);
+  nz = std::clamp(nz, ZOOM_MIN, ZOOM_MAX);
+  if (std::abs(nz - a->zoom) < 0.001)
+    return;
+  double oz = a->zoom;
+  a->scroll_x = zoom_axis(a->scroll_x, oz, nz, fx);
+  a->scroll_y = zoom_axis(a->scroll_y, oz, nz, fy);
+  a->zoom = nz;
+  a->match_count_dirty =
+      true; /* font sizes unchanged but x positions scaled inside spans */
+  clamp(a);
 }
 
 /* Scrollbar geometry */
-struct SBG { double pos, len, track; bool vis; };
+struct SBG {
+  double pos, len, track;
+  bool vis;
+};
 
 static SBG sbv(App *a) {
-    SBG g{}; int sdh = (int)(a->doc_h * a->zoom);
-    g.vis = sdh > a->vp_h; if (!g.vis) return g;
-    g.track = a->vp_h;
-    double r = (double)a->vp_h / sdh;
-    g.len = std::max(SB_MIN, r * a->vp_h);
-    double ms = sdh - a->vp_h;
-    g.pos = (ms > 0) ? (a->scroll_y / ms) * (a->vp_h - g.len) : 0;
+  SBG g{};
+  int sdh = (int)(a->doc_h * a->zoom);
+  g.vis = sdh > a->vp_h;
+  if (!g.vis)
     return g;
+  g.track = a->vp_h;
+  double r = (double)a->vp_h / sdh;
+  g.len = std::max(SB_MIN, r * a->vp_h);
+  double ms = sdh - a->vp_h;
+  g.pos = (ms > 0) ? (a->scroll_y / ms) * (a->vp_h - g.len) : 0;
+  return g;
 }
 
 static SBG sbh(App *a) {
-    SBG g{}; int sdw = (int)(a->doc_w * a->zoom);
-    g.vis = sdw > a->vp_w; if (!g.vis) return g;
-    g.track = a->vp_w;
-    double r = (double)a->vp_w / sdw;
-    g.len = std::max(SB_MIN, r * a->vp_w);
-    double ms = sdw - a->vp_w;
-    g.pos = (ms > 0) ? (a->scroll_x / ms) * (a->vp_w - g.len) : 0;
+  SBG g{};
+  int sdw = (int)(a->doc_w * a->zoom);
+  g.vis = sdw > a->vp_w;
+  if (!g.vis)
     return g;
+  g.track = a->vp_w;
+  double r = (double)a->vp_w / sdw;
+  g.len = std::max(SB_MIN, r * a->vp_w);
+  double ms = sdw - a->vp_w;
+  g.pos = (ms > 0) ? (a->scroll_x / ms) * (a->vp_w - g.len) : 0;
+  return g;
 }
 
 /* ========================================================================= */
@@ -542,40 +602,42 @@ static SBG sbh(App *a) {
    the search bar at top). Avoids jarring re-centering when the match is
    already on screen. */
 static bool ensure_match_visible(App *a) {
-    if (a->current_match < 0 || a->current_match >= (int)a->search_matches.size()) return false;
-    const SearchHit &h = a->search_matches[a->current_match];
-    double top = (double)h.doc_y * a->zoom;
-    double bot = (double)(h.doc_y + h.height) * a->zoom;
-    double margin_top = SEARCH_BAR_H + 10;
-    double margin_bot = 10;
-    if (top < a->scroll_y + margin_top || bot > a->scroll_y + a->vp_h - margin_bot) {
-        a->scroll_y = top - a->vp_h * 0.4;
-        clamp(a);
-        return true;
-    }
+  if (a->current_match < 0 || a->current_match >= (int)a->search_matches.size())
     return false;
+  const SearchHit &h = a->search_matches[a->current_match];
+  double top = (double)h.doc_y * a->zoom;
+  double bot = (double)(h.doc_y + h.height) * a->zoom;
+  double margin_top = SEARCH_BAR_H + 10;
+  double margin_bot = 10;
+  if (top < a->scroll_y + margin_top ||
+      bot > a->scroll_y + a->vp_h - margin_bot) {
+    a->scroll_y = top - a->vp_h * 0.4;
+    clamp(a);
+    return true;
+  }
+  return false;
 }
 
 static void close_search(App *a, mdv_window *w) {
-    a->search_active = false;
-    a->search_query.clear();
-    a->search_cursor = 0;
-    a->search_anchor = -1;
-    a->search_matches.clear();
-    a->current_match = -1;
-    a->match_count_dirty = false;
-    mdv_window_request_redraw(w);
+  a->search_active = false;
+  a->search_query.clear();
+  a->search_cursor = 0;
+  a->search_anchor = -1;
+  a->search_matches.clear();
+  a->current_match = -1;
+  a->match_count_dirty = false;
+  mdv_window_request_redraw(w);
 }
 
 static void open_search(App *a, mdv_window *w) {
-    a->search_active = true;
-    a->search_query.clear();
-    a->search_cursor = 0;
-    a->search_anchor = -1;
-    a->search_matches.clear();
-    a->current_match = -1;
-    a->match_count_dirty = false;
-    mdv_window_request_redraw(w);
+  a->search_active = true;
+  a->search_query.clear();
+  a->search_cursor = 0;
+  a->search_anchor = -1;
+  a->search_matches.clear();
+  a->current_match = -1;
+  a->match_count_dirty = false;
+  mdv_window_request_redraw(w);
 }
 
 /* Re-run find_matches against the most recently rendered spans if anything
@@ -585,439 +647,471 @@ static void open_search(App *a, mdv_window *w) {
    followed by Enter (both in the same event-loop dispatch) sees fresh
    matches rather than the previous render's stale list). */
 static void refresh_search_matches(App *a, mdv_window *w) {
-    if (!a->match_count_dirty) return;
-    if (!a->search_active || a->search_query.empty()) {
-        a->search_matches.clear();
-        a->current_match = -1;
-        a->match_count_dirty = false;
-        return;
-    }
-    int prev_cm = a->current_match;
-    a->search_matches = a->con.find_matches(a->search_query, a->case_sensitive,
-                                             a->whole_word, a->regex_mode);
-    if (a->search_matches.empty()) {
-        a->current_match = -1;
-    } else if (prev_cm < 0 || prev_cm >= (int)a->search_matches.size()) {
-        a->current_match = 0;
-        if (ensure_match_visible(a) && w) mdv_window_request_redraw(w);
-    }
+  if (!a->match_count_dirty)
+    return;
+  if (!a->search_active || a->search_query.empty()) {
+    a->search_matches.clear();
+    a->current_match = -1;
     a->match_count_dirty = false;
+    return;
+  }
+  int prev_cm = a->current_match;
+  a->search_matches = a->con.find_matches(a->search_query, a->case_sensitive,
+                                          a->whole_word, a->regex_mode);
+  if (a->search_matches.empty()) {
+    a->current_match = -1;
+  } else if (prev_cm < 0 || prev_cm >= (int)a->search_matches.size()) {
+    a->current_match = 0;
+    if (ensure_match_visible(a) && w)
+      mdv_window_request_redraw(w);
+  }
+  a->match_count_dirty = false;
 }
 
 /* Chrome colors: same shape, different palette per theme. */
-struct Chrome {
-    double bg[3];
-    double text[3];
-    double dim[3];
-    double sep[3];
-    double accent[3];
-    double accent_bg[4];  /* with alpha */
-};
-static const Chrome CHROME_LIGHT = {
-    {0.97,0.97,0.97},
-    {0.10,0.10,0.10},
-    {0.45,0.45,0.45},
-    {0.60,0.60,0.60},
-    {0.20,0.50,0.90},
-    {0.20,0.50,0.90, 0.18}
-};
-static const Chrome CHROME_DARK = {
-    {0.16,0.16,0.16},
-    {0.85,0.85,0.85},
-    {0.60,0.60,0.60},
-    {0.30,0.30,0.30},
-    {0.50,0.70,1.00},
-    {0.40,0.60,1.00, 0.20}
-};
-static const Chrome &chrome(App *a) { return a->dark_mode ? CHROME_DARK : CHROME_LIGHT; }
+static const Chrome &chrome(App *a) {
+  return a->dark_mode ? CHROME_DARK : CHROME_LIGHT;
+}
 
 static int toc_total_height(App *a) {
-    return TOC_PAD_TOP * 2 + (int)a->toc_entries.size() * TOC_LINE_H;
+  return TOC_PAD_TOP * 2 + (int)a->toc_entries.size() * TOC_LINE_H;
 }
 
 static void clamp_toc_scroll(App *a) {
-    int total = toc_total_height(a);
-    double max = std::max(0, total - a->vp_h);
-    if (a->toc_scroll_y < 0)   a->toc_scroll_y = 0;
-    if (a->toc_scroll_y > max) a->toc_scroll_y = max;
+  int total = toc_total_height(a);
+  double max = std::max(0, total - a->vp_h);
+  if (a->toc_scroll_y < 0)
+    a->toc_scroll_y = 0;
+  if (a->toc_scroll_y > max)
+    a->toc_scroll_y = max;
 }
 
 static void draw_sidebar(App *a, cairo_t *cr) {
-    const Chrome &c = chrome(a);
-    int w = SIDEBAR_W;
-    int h = a->vp_h;
+  const Chrome &c = chrome(a);
+  int w = SIDEBAR_W;
+  int h = a->vp_h;
 
-    cairo_set_source_rgb(cr, c.bg[0], c.bg[1], c.bg[2]);
-    cairo_rectangle(cr, 0, 0, w, h); cairo_fill(cr);
-    cairo_set_source_rgb(cr, c.sep[0], c.sep[1], c.sep[2]);
-    cairo_rectangle(cr, w - 1, 0, 1, h); cairo_fill(cr);
+  cairo_set_source_rgb(cr, c.bg[0], c.bg[1], c.bg[2]);
+  cairo_rectangle(cr, 0, 0, w, h);
+  cairo_fill(cr);
+  cairo_set_source_rgb(cr, c.sep[0], c.sep[1], c.sep[2]);
+  cairo_rectangle(cr, w - 1, 0, 1, h);
+  cairo_fill(cr);
 
-    cairo_save(cr);
-    cairo_rectangle(cr, 0, 0, w, h); cairo_clip(cr);
+  cairo_save(cr);
+  cairo_rectangle(cr, 0, 0, w, h);
+  cairo_clip(cr);
 
-    PangoLayout *l = pango_cairo_create_layout(cr);
-    PangoFontDescription *fd = pango_font_description_from_string("Sans 11");
-    pango_layout_set_font_description(l, fd);
+  PangoLayout *l = pango_cairo_create_layout(cr);
+  PangoFontDescription *fd = pango_font_description_from_string("Sans 11");
+  pango_layout_set_font_description(l, fd);
 
-    /* Measure the header text first so we know the band it occupies. */
-    pango_layout_set_text(l, "Outline", -1);
-    int th = 0, tw_px = 0;
-    pango_layout_get_pixel_size(l, &tw_px, &th);
-    int header_h = 6 + th + 4 + 1;  /* top pad + text + bottom pad + separator px */
+  /* Measure the header text first so we know the band it occupies. */
+  pango_layout_set_text(l, "Outline", -1);
+  int th = 0, tw_px = 0;
+  pango_layout_get_pixel_size(l, &tw_px, &th);
+  int header_h =
+      6 + th + 4 + 1; /* top pad + text + bottom pad + separator px */
 
-    /* Entries first; anything that scrolls past the top will be masked by
-       the header drawn afterwards. */
-    int y0 = TOC_PAD_TOP - (int)a->toc_scroll_y + 24;
-    for (size_t i = 0; i < a->toc_entries.size(); i++) {
-        const auto &e = a->toc_entries[i];
-        int y = y0 + (int)i * TOC_LINE_H;
-        if (y + TOC_LINE_H < 0) continue;
-        if (y > h) break;
+  /* Entries first; anything that scrolls past the top will be masked by
+     the header drawn afterwards. */
+  int y0 = TOC_PAD_TOP - (int)a->toc_scroll_y + 24;
+  for (size_t i = 0; i < a->toc_entries.size(); i++) {
+    const auto &e = a->toc_entries[i];
+    int y = y0 + (int)i * TOC_LINE_H;
+    if (y + TOC_LINE_H < 0)
+      continue;
+    if (y > h)
+      break;
 
-        if ((int)i == a->toc_hover_idx) {
-            cairo_set_source_rgba(cr, c.accent_bg[0], c.accent_bg[1], c.accent_bg[2], c.accent_bg[3]);
-            cairo_rectangle(cr, 4, y, w - 8, TOC_LINE_H); cairo_fill(cr);
-        }
-        int indent = 14 + (e.level - 1) * 14;
-        pango_layout_set_text(l, e.text.c_str(), -1);
-        pango_layout_set_width(l, (w - indent - 12) * PANGO_SCALE);
-        pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_END);
-        int eh = 0, ew = 0;
-        pango_layout_get_pixel_size(l, &ew, &eh);
-        cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
-        cairo_move_to(cr, indent, y + (TOC_LINE_H - eh) / 2.0);
-        pango_cairo_show_layout(cr, l);
-        pango_layout_set_width(l, -1);
+    if ((int)i == a->toc_hover_idx) {
+      cairo_set_source_rgba(cr, c.accent_bg[0], c.accent_bg[1], c.accent_bg[2],
+                            c.accent_bg[3]);
+      cairo_rectangle(cr, 4, y, w - 8, TOC_LINE_H);
+      cairo_fill(cr);
     }
-
-    /* Header: solid bg masks any entries that scrolled into this band,
-       then the "Outline" label and a separator line below it. */
-    cairo_set_source_rgb(cr, c.bg[0], c.bg[1], c.bg[2]);
-    cairo_rectangle(cr, 0, 0, w, header_h); cairo_fill(cr);
-    pango_layout_set_text(l, "Outline", -1);
-    pango_layout_set_width(l, -1);
-    cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
-    cairo_move_to(cr, 14, 6);
+    int indent = 14 + (e.level - 1) * 14;
+    pango_layout_set_text(l, e.text.c_str(), -1);
+    pango_layout_set_width(l, (w - indent - 12) * PANGO_SCALE);
+    pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_END);
+    int eh = 0, ew = 0;
+    pango_layout_get_pixel_size(l, &ew, &eh);
+    cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
+    cairo_move_to(cr, indent, y + (TOC_LINE_H - eh) / 2.0);
     pango_cairo_show_layout(cr, l);
-    cairo_set_source_rgb(cr, c.sep[0], c.sep[1], c.sep[2]);
-    cairo_rectangle(cr, 12, 6 + th + 4, w - 24, 1); cairo_fill(cr);
+    pango_layout_set_width(l, -1);
+  }
 
-    pango_font_description_free(fd);
-    g_object_unref(l);
-    cairo_restore(cr);
+  /* Header: solid bg masks any entries that scrolled into this band,
+     then the "Outline" label and a separator line below it. */
+  cairo_set_source_rgb(cr, c.bg[0], c.bg[1], c.bg[2]);
+  cairo_rectangle(cr, 0, 0, w, header_h);
+  cairo_fill(cr);
+  pango_layout_set_text(l, "Outline", -1);
+  pango_layout_set_width(l, -1);
+  cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
+  cairo_move_to(cr, 14, 6);
+  pango_cairo_show_layout(cr, l);
+  cairo_set_source_rgb(cr, c.sep[0], c.sep[1], c.sep[2]);
+  cairo_rectangle(cr, 12, 6 + th + 4, w - 24, 1);
+  cairo_fill(cr);
+
+  pango_font_description_free(fd);
+  g_object_unref(l);
+  cairo_restore(cr);
 }
 
 /* Returns the TOC entry index under window-coord (x,y), or -1. */
 static int toc_index_at(App *a, int x, int y) {
-    if (!a->toc_visible || x < 0 || x >= SIDEBAR_W) return -1;
-    int y0 = TOC_PAD_TOP - (int)a->toc_scroll_y + 24;
-    if (y < y0) return -1;
-    int idx = (y - y0) / TOC_LINE_H;
-    if (idx < 0 || idx >= (int)a->toc_entries.size()) return -1;
-    return idx;
+  if (!a->toc_visible || x < 0 || x >= SIDEBAR_W)
+    return -1;
+  int y0 = TOC_PAD_TOP - (int)a->toc_scroll_y + 24;
+  if (y < y0)
+    return -1;
+  int idx = (y - y0) / TOC_LINE_H;
+  if (idx < 0 || idx >= (int)a->toc_entries.size())
+    return -1;
+  return idx;
 }
 
 /* Convert a code block's top-right corner from doc coords to the
    viewport-space rect of its copy button. The button sits just inside
    the block's top-right padding. */
-static void copy_button_rect(App *a, const App::CodeBlockHit &cb,
-                             int &out_x, int &out_y) {
-    int tw = toc_w(a);
-    out_x = (int)((cb.x + cb.w) * a->zoom - a->scroll_x) + tw - COPY_BTN_W - COPY_BTN_PAD;
-    out_y = (int)((cb.y) * a->zoom - a->scroll_y) + COPY_BTN_PAD;
+static void copy_button_rect(App *a, const App::CodeBlockHit &cb, int &out_x,
+                             int &out_y) {
+  int tw = toc_w(a);
+  out_x = (int)((cb.x + cb.w) * a->zoom - a->scroll_x) + tw - COPY_BTN_W -
+          COPY_BTN_PAD;
+  out_y = (int)((cb.y) * a->zoom - a->scroll_y) + COPY_BTN_PAD;
 }
 
 /* Returns 0/1/2 if (x,y) is over one of the find-bar mode toggles, or -1.
    Only meaningful while search_active. */
 static int search_toggle_at(App *a, int x, int y) {
-    if (!a->search_active) return -1;
-    for (int i = 0; i < 3; i++) {
-        const auto &r = a->search_toggle_rects[i];
-        if (r.w == 0) continue;
-        if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) return i;
-    }
+  if (!a->search_active)
     return -1;
+  for (int i = 0; i < 3; i++) {
+    const auto &r = a->search_toggle_rects[i];
+    if (r.w == 0)
+      continue;
+    if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+      return i;
+  }
+  return -1;
 }
 
 /* Returns the index of the code-block whose button is under (x,y) in
    viewport coords, or -1. */
 static int copy_button_at(App *a, int x, int y) {
-    for (size_t i = 0; i < a->code_blocks.size(); i++) {
-        int bx, by;
-        copy_button_rect(a, a->code_blocks[i], bx, by);
-        if (x >= bx && x < bx + COPY_BTN_W
-         && y >= by && y < by + COPY_BTN_H) return (int)i;
-    }
-    return -1;
+  for (size_t i = 0; i < a->code_blocks.size(); i++) {
+    int bx, by;
+    copy_button_rect(a, a->code_blocks[i], bx, by);
+    if (x >= bx && x < bx + COPY_BTN_W && y >= by && y < by + COPY_BTN_H)
+      return (int)i;
+  }
+  return -1;
 }
 
 static void draw_copy_buttons(App *a, cairo_t *cr) {
-    int tw = toc_w(a);
-    const Chrome &c = chrome(a);
-    PangoFontDescription *fd = pango_font_description_from_string("Sans 10");
-    for (size_t i = 0; i < a->code_blocks.size(); i++) {
-        const auto &cb = a->code_blocks[i];
-        int bx, by;
-        copy_button_rect(a, cb, bx, by);
-        /* Skip entirely if outside the doc viewport. */
-        if (bx + COPY_BTN_W < tw || bx > tw + a->vp_w) continue;
-        if (by + COPY_BTN_H < 0 || by > a->vp_h - STATUS_H) continue;
+  int tw = toc_w(a);
+  const Chrome &c = chrome(a);
+  PangoFontDescription *fd = pango_font_description_from_string("Sans 10");
+  for (size_t i = 0; i < a->code_blocks.size(); i++) {
+    const auto &cb = a->code_blocks[i];
+    int bx, by;
+    copy_button_rect(a, cb, bx, by);
+    /* Skip entirely if outside the doc viewport. */
+    if (bx + COPY_BTN_W < tw || bx > tw + a->vp_w)
+      continue;
+    if (by + COPY_BTN_H < 0 || by > a->vp_h - STATUS_H)
+      continue;
 
-        bool hovered = (a->code_button_hover == (int)i);
-        cairo_set_source_rgba(cr, c.bg[0], c.bg[1], c.bg[2], hovered ? 1.0 : 0.85);
-        cairo_rectangle(cr, bx, by, COPY_BTN_W, COPY_BTN_H); cairo_fill(cr);
-        cairo_set_source_rgba(cr, c.sep[0], c.sep[1], c.sep[2], hovered ? 0.9 : 0.5);
-        cairo_set_line_width(cr, 1);
-        cairo_rectangle(cr, bx + 0.5, by + 0.5, COPY_BTN_W - 1, COPY_BTN_H - 1);
-        cairo_stroke(cr);
+    bool hovered = (a->code_button_hover == (int)i);
+    cairo_set_source_rgba(cr, c.bg[0], c.bg[1], c.bg[2], hovered ? 1.0 : 0.85);
+    cairo_rectangle(cr, bx, by, COPY_BTN_W, COPY_BTN_H);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, c.sep[0], c.sep[1], c.sep[2],
+                          hovered ? 0.9 : 0.5);
+    cairo_set_line_width(cr, 1);
+    cairo_rectangle(cr, bx + 0.5, by + 0.5, COPY_BTN_W - 1, COPY_BTN_H - 1);
+    cairo_stroke(cr);
 
-        bool copied = (a->code_copied_idx == (int)i);
-        const char *label = copied ? "Copied!" : "Copy";
-        PangoLayout *l = pango_cairo_create_layout(cr);
-        pango_layout_set_font_description(l, fd);
-        pango_layout_set_text(l, label, -1);
-        int lw = 0, lh = 0;
-        pango_layout_get_pixel_size(l, &lw, &lh);
-        if (copied)       cairo_set_source_rgb(cr, c.accent[0], c.accent[1], c.accent[2]);
-        else if (hovered) cairo_set_source_rgb(cr, c.accent[0], c.accent[1], c.accent[2]);
-        else              cairo_set_source_rgb(cr, c.text[0],   c.text[1],   c.text[2]);
-        cairo_move_to(cr, bx + (COPY_BTN_W - lw) / 2.0, by + (COPY_BTN_H - lh) / 2.0);
-        pango_cairo_show_layout(cr, l);
-        g_object_unref(l);
-    }
-    pango_font_description_free(fd);
+    bool copied = (a->code_copied_idx == (int)i);
+    const char *label = copied ? "Copied!" : "Copy";
+    PangoLayout *l = pango_cairo_create_layout(cr);
+    pango_layout_set_font_description(l, fd);
+    pango_layout_set_text(l, label, -1);
+    int lw = 0, lh = 0;
+    pango_layout_get_pixel_size(l, &lw, &lh);
+    if (copied)
+      cairo_set_source_rgb(cr, c.accent[0], c.accent[1], c.accent[2]);
+    else if (hovered)
+      cairo_set_source_rgb(cr, c.accent[0], c.accent[1], c.accent[2]);
+    else
+      cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
+    cairo_move_to(cr, bx + (COPY_BTN_W - lw) / 2.0,
+                  by + (COPY_BTN_H - lh) / 2.0);
+    pango_cairo_show_layout(cr, l);
+    g_object_unref(l);
+  }
+  pango_font_description_free(fd);
 }
 
 static void draw_status_bar(App *a, cairo_t *cr, int ww, int hh) {
-    int top = hh - STATUS_H;
-    if (top < 0) return;
-    const Chrome &c = chrome(a);
-    cairo_set_source_rgb(cr, c.bg[0], c.bg[1], c.bg[2]);
-    cairo_rectangle(cr, 0, top, ww, STATUS_H); cairo_fill(cr);
-    cairo_set_source_rgb(cr, c.sep[0], c.sep[1], c.sep[2]);
-    cairo_rectangle(cr, 0, top, ww, 1); cairo_fill(cr);
+  int top = hh - STATUS_H;
+  if (top < 0)
+    return;
+  const Chrome &c = chrome(a);
+  cairo_set_source_rgb(cr, c.bg[0], c.bg[1], c.bg[2]);
+  cairo_rectangle(cr, 0, top, ww, STATUS_H);
+  cairo_fill(cr);
+  cairo_set_source_rgb(cr, c.sep[0], c.sep[1], c.sep[2]);
+  cairo_rectangle(cr, 0, top, ww, 1);
+  cairo_fill(cr);
 
-    PangoLayout *l = pango_cairo_create_layout(cr);
-    PangoFontDescription *fd = pango_font_description_from_string("Sans 10");
-    pango_layout_set_font_description(l, fd);
+  PangoLayout *l = pango_cairo_create_layout(cr);
+  PangoFontDescription *fd = pango_font_description_from_string("Sans 10");
+  pango_layout_set_font_description(l, fd);
 
-    /* Right: scroll % · zoom % (+ highlight indicator while jobs are running).
-       Scroll % is only meaningful when the doc actually overflows the
-       viewport. When it fits, showing "100%" is misleading, so we omit it.
-       Drawn first so the left slot knows how much room it has left. */
-    int zoom_pct = (int)(a->zoom * 100.0 + 0.5);
+  /* Right: scroll % · zoom % (+ highlight indicator while jobs are running).
+     Scroll % is only meaningful when the doc actually overflows the
+     viewport. When it fits, showing "100%" is misleading, so we omit it.
+     Drawn first so the left slot knows how much room it has left. */
+  int zoom_pct = (int)(a->zoom * 100.0 + 0.5);
 
-    std::string right;
-    if (a->highlighter.active() && !a->highlighter.all_done())
-        right = "highlighting… · ";
-    if (a->doc_h > 0 && (int)(a->doc_h * a->zoom) > a->vp_h) {
-        int max_y = (int)(a->doc_h * a->zoom) - a->vp_h;
-        int scroll_pct = (int)((a->scroll_y / (double)max_y) * 100.0 + 0.5);
-        if (scroll_pct < 0)   scroll_pct = 0;
-        if (scroll_pct > 100) scroll_pct = 100;
-        right += std::to_string(scroll_pct) + "%  · ";
-    }
-    right += std::to_string(zoom_pct) + "%";
+  std::string right;
+  if (a->highlighter.active() && !a->highlighter.all_done())
+    right = "highlighting… · ";
+  if (a->doc_h > 0 && (int)(a->doc_h * a->zoom) > a->vp_h) {
+    int max_y = (int)(a->doc_h * a->zoom) - a->vp_h;
+    int scroll_pct = (int)((a->scroll_y / (double)max_y) * 100.0 + 0.5);
+    if (scroll_pct < 0)
+      scroll_pct = 0;
+    if (scroll_pct > 100)
+      scroll_pct = 100;
+    right += std::to_string(scroll_pct) + "%  · ";
+  }
+  right += std::to_string(zoom_pct) + "%";
 
+  cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
+  pango_layout_set_text(l, right.c_str(), -1);
+  int rw = 0, rh = 0;
+  pango_layout_get_pixel_size(l, &rw, &rh);
+  cairo_move_to(cr, ww - rw - 10, top + (STATUS_H - rh) / 2.0);
+  pango_cairo_show_layout(cr, l);
+
+  /* Left: the filename, normally alone. While hovering a link the target
+     takes the leading slot and the filename is pushed to its right behind
+     a separator, so the two are never mistaken for each other: the link
+     leads and is drawn at full strength, the filename stays dimmed. */
+  int avail = ww - rw - 30; /* 10 left pad + 10 gap before right cluster */
+  if (avail < 0)
+    avail = 0;
+
+  if (a->hover_href.empty()) {
     cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
-    pango_layout_set_text(l, right.c_str(), -1);
-    int rw = 0, rh = 0;
-    pango_layout_get_pixel_size(l, &rw, &rh);
-    cairo_move_to(cr, ww - rw - 10, top + (STATUS_H - rh) / 2.0);
+    pango_layout_set_width(l, avail * PANGO_SCALE);
+    pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_END);
+    pango_layout_set_text(l, a->file_basename.c_str(), -1);
+    int th_l = 0;
+    pango_layout_get_pixel_size(l, nullptr, &th_l);
+    cairo_move_to(cr, 10, top + (STATUS_H - th_l) / 2.0);
+    pango_cairo_show_layout(cr, l);
+  } else {
+    /* Measure the "  ·  filename" tail first and reserve room for it, so
+       a long href ellipsizes instead of squeezing the filename out. The
+       tail never takes more than half the slot. */
+    std::string tail = "  ·  " + a->file_basename;
+    pango_layout_set_width(l, -1);
+    pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_NONE);
+    pango_layout_set_text(l, tail.c_str(), -1);
+    int tw_t = 0, th_t = 0;
+    pango_layout_get_pixel_size(l, &tw_t, &th_t);
+    if (tw_t > avail / 2)
+      tw_t = avail / 2;
+    int link_max = avail - tw_t;
+    if (link_max < 0)
+      link_max = 0;
+
+    /* Link target, leading and at full strength. */
+    cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
+    pango_layout_set_width(l, link_max * PANGO_SCALE);
+    pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_MIDDLE);
+    pango_layout_set_text(l, a->hover_href.c_str(), -1);
+    int tw_h = 0, th_h = 0;
+    pango_layout_get_pixel_size(l, &tw_h, &th_h);
+    cairo_move_to(cr, 10, top + (STATUS_H - th_h) / 2.0);
     pango_cairo_show_layout(cr, l);
 
-    /* Left: the filename, normally alone. While hovering a link the target
-       takes the leading slot and the filename is pushed to its right behind
-       a separator, so the two are never mistaken for each other: the link
-       leads and is drawn at full strength, the filename stays dimmed. */
-    int avail = ww - rw - 30;   /* 10 left pad + 10 gap before right cluster */
-    if (avail < 0) avail = 0;
+    /* Separator + filename, dimmed, packed against the link. */
+    cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
+    int rest = avail - tw_h;
+    if (rest < 0)
+      rest = 0;
+    pango_layout_set_width(l, rest * PANGO_SCALE);
+    pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_END);
+    pango_layout_set_text(l, tail.c_str(), -1);
+    pango_layout_get_pixel_size(l, nullptr, &th_t);
+    cairo_move_to(cr, 10 + tw_h, top + (STATUS_H - th_t) / 2.0);
+    pango_cairo_show_layout(cr, l);
+  }
 
-    if (a->hover_href.empty()) {
-        cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
-        pango_layout_set_width(l, avail * PANGO_SCALE);
-        pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_END);
-        pango_layout_set_text(l, a->file_basename.c_str(), -1);
-        int th_l = 0;
-        pango_layout_get_pixel_size(l, nullptr, &th_l);
-        cairo_move_to(cr, 10, top + (STATUS_H - th_l) / 2.0);
-        pango_cairo_show_layout(cr, l);
-    } else {
-        /* Measure the "  ·  filename" tail first and reserve room for it, so
-           a long href ellipsizes instead of squeezing the filename out. The
-           tail never takes more than half the slot. */
-        std::string tail = "  ·  " + a->file_basename;
-        pango_layout_set_width(l, -1);
-        pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_NONE);
-        pango_layout_set_text(l, tail.c_str(), -1);
-        int tw_t = 0, th_t = 0;
-        pango_layout_get_pixel_size(l, &tw_t, &th_t);
-        if (tw_t > avail / 2) tw_t = avail / 2;
-        int link_max = avail - tw_t;
-        if (link_max < 0) link_max = 0;
-
-        /* Link target, leading and at full strength. */
-        cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
-        pango_layout_set_width(l, link_max * PANGO_SCALE);
-        pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_MIDDLE);
-        pango_layout_set_text(l, a->hover_href.c_str(), -1);
-        int tw_h = 0, th_h = 0;
-        pango_layout_get_pixel_size(l, &tw_h, &th_h);
-        cairo_move_to(cr, 10, top + (STATUS_H - th_h) / 2.0);
-        pango_cairo_show_layout(cr, l);
-
-        /* Separator + filename, dimmed, packed against the link. */
-        cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
-        int rest = avail - tw_h;
-        if (rest < 0) rest = 0;
-        pango_layout_set_width(l, rest * PANGO_SCALE);
-        pango_layout_set_ellipsize(l, PANGO_ELLIPSIZE_END);
-        pango_layout_set_text(l, tail.c_str(), -1);
-        pango_layout_get_pixel_size(l, nullptr, &th_t);
-        cairo_move_to(cr, 10 + tw_h, top + (STATUS_H - th_t) / 2.0);
-        pango_cairo_show_layout(cr, l);
-    }
-
-    pango_font_description_free(fd);
-    g_object_unref(l);
+  pango_font_description_free(fd);
+  g_object_unref(l);
 }
 
 static void draw_help_overlay(App *a, cairo_t *cr, int ww, int hh) {
-    const Chrome &c = chrome(a);
-    /* Translucent dim over the whole window. */
-    cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, a->dark_mode ? 0.55 : 0.40);
-    cairo_rectangle(cr, 0, 0, ww, hh); cairo_fill(cr);
+  const Chrome &c = chrome(a);
+  /* Translucent dim over the whole window. */
+  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, a->dark_mode ? 0.55 : 0.40);
+  cairo_rectangle(cr, 0, 0, ww, hh);
+  cairo_fill(cr);
 
-    static const char *lines[] = {
-        "  Keyboard",
-        "    j / ↓                 Scroll down",
-        "    k / ↑                 Scroll up",
-        "    Space / PageDown      Page down",
-        "    Shift+Space / PgUp    Page up",
-        "    g / Home              Top of document",
-        "    G / End               Bottom of document",
-        "    Ctrl++ / Ctrl+=       Increase text size",
-        "    Ctrl+-                Decrease text size",
-        "    Ctrl+0                Reset text size + zoom",
-        "    Ctrl+T                Toggle outline sidebar",
-        "    Ctrl+D                Toggle dark mode",
-        "    Alt+← / Backspace     Back (followed links)",
-        "    Alt+→ / Shift+Bksp    Forward",
-        "    Ctrl+C                Copy selection",
-        "    Ctrl+A                Select all",
-        "    Ctrl+F                Find in document",
-        "      Enter / F3          Next match",
-        "      Shift+Enter / S+F3  Previous match",
-        "      Alt+C               Toggle case-sensitive",
-        "      Alt+W               Toggle whole-word",
-        "      Alt+R               Toggle regex",
-        "      Ctrl+Backspace / W  Delete word",
-        "      Esc                 Close find",
-        "    F1 / ?                Toggle this help (Esc also closes)",
-        "    q                     Quit",
-        "",
-        "  Mouse",
-        "    Wheel                 Scroll (sidebar scrolls outline)",
-        "    Shift+Wheel           Horizontal scroll",
-        "    Ctrl+Wheel            Zoom",
-        "    Pinch                 Zoom (touchpad)",
-        "    Click + drag          Select text",
-        "    Double-click + drag   Select by word",
-        "    Triple-click + drag   Select by line",
-        "    Click on link         Follow link",
-        "    Click outline entry   Jump to heading",
-    };
-    const int n_lines = (int)(sizeof(lines) / sizeof(lines[0]));
+  static const char *lines[] = {
+      "  Keyboard",
+      "    j / ↓                 Scroll down",
+      "    k / ↑                 Scroll up",
+      "    Space / PageDown      Page down",
+      "    Shift+Space / PgUp    Page up",
+      "    g / Home              Top of document",
+      "    G / End               Bottom of document",
+      "    Ctrl++ / Ctrl+=       Increase text size",
+      "    Ctrl+-                Decrease text size",
+      "    Ctrl+0                Reset text size + zoom",
+      "    Ctrl+T                Toggle outline sidebar",
+      "    Ctrl+D                Toggle dark mode",
+      "    Alt+← / Backspace     Back (followed links)",
+      "    Alt+→ / Shift+Bksp    Forward",
+      "    Ctrl+C                Copy selection",
+      "    Ctrl+A                Select all",
+      "    Ctrl+F                Find in document",
+      "      Enter / F3          Next match",
+      "      Shift+Enter / S+F3  Previous match",
+      "      Alt+C               Toggle case-sensitive",
+      "      Alt+W               Toggle whole-word",
+      "      Alt+R               Toggle regex",
+      "      Ctrl+Backspace / W  Delete word",
+      "      Esc                 Close find",
+      "    F1 / ?                Toggle this help (Esc also closes)",
+      "    q                     Quit",
+      "",
+      "  Mouse",
+      "    Wheel                 Scroll (sidebar scrolls outline)",
+      "    Shift+Wheel           Horizontal scroll",
+      "    Ctrl+Wheel            Zoom",
+      "    Pinch                 Zoom (touchpad)",
+      "    Click + drag          Select text",
+      "    Double-click + drag   Select by word",
+      "    Triple-click + drag   Select by line",
+      "    Click on link         Follow link",
+      "    Click outline entry   Jump to heading",
+  };
+  const int n_lines = (int)(sizeof(lines) / sizeof(lines[0]));
 
-    const int LINE_H   = 18;
-    const int PAD_TOP  = 18;
-    const int PAD_BOT  = 18;
-    int content_h = PAD_TOP + LINE_H * n_lines + PAD_BOT;
+  const int LINE_H = 18;
+  const int PAD_TOP = 18;
+  const int PAD_BOT = 18;
+  int content_h = PAD_TOP + LINE_H * n_lines + PAD_BOT;
 
-    /* Panel dimensions: natural content size, capped to fit viewport. When
-       capped, the panel scrolls. content_h > panel_h is what max_scroll
-       is built from below. */
-    int panel_w = 540, panel_h = content_h;
-    if (panel_w > ww - 40) panel_w = ww - 40;
-    if (panel_h > hh - 40) panel_h = hh - 40;
-    int x = (ww - panel_w) / 2, y = (hh - panel_h) / 2;
+  /* Panel dimensions: natural content size, capped to fit viewport. When
+     capped, the panel scrolls. content_h > panel_h is what max_scroll
+     is built from below. */
+  int panel_w = 540, panel_h = content_h;
+  if (panel_w > ww - 40)
+    panel_w = ww - 40;
+  if (panel_h > hh - 40)
+    panel_h = hh - 40;
+  int x = (ww - panel_w) / 2, y = (hh - panel_h) / 2;
 
-    double max_scroll = (content_h > panel_h) ? (content_h - panel_h) : 0;
-    if (a->help_scroll_y < 0)          a->help_scroll_y = 0;
-    if (a->help_scroll_y > max_scroll) a->help_scroll_y = max_scroll;
+  double max_scroll = (content_h > panel_h) ? (content_h - panel_h) : 0;
+  if (a->help_scroll_y < 0)
+    a->help_scroll_y = 0;
+  if (a->help_scroll_y > max_scroll)
+    a->help_scroll_y = max_scroll;
 
-    /* Card. */
-    cairo_set_source_rgba(cr, c.bg[0], c.bg[1], c.bg[2], 0.97);
-    cairo_rectangle(cr, x, y, panel_w, panel_h); cairo_fill(cr);
-    cairo_set_source_rgba(cr, c.sep[0], c.sep[1], c.sep[2], 1.0);
-    cairo_set_line_width(cr, 1.0);
-    cairo_rectangle(cr, x + 0.5, y + 0.5, panel_w - 1, panel_h - 1); cairo_stroke(cr);
+  /* Card. */
+  cairo_set_source_rgba(cr, c.bg[0], c.bg[1], c.bg[2], 0.97);
+  cairo_rectangle(cr, x, y, panel_w, panel_h);
+  cairo_fill(cr);
+  cairo_set_source_rgba(cr, c.sep[0], c.sep[1], c.sep[2], 1.0);
+  cairo_set_line_width(cr, 1.0);
+  cairo_rectangle(cr, x + 0.5, y + 0.5, panel_w - 1, panel_h - 1);
+  cairo_stroke(cr);
 
-    /* Clip text to the panel interior so scrolled-off lines stay hidden. */
-    cairo_save(cr);
-    cairo_rectangle(cr, x + 1, y + 1, panel_w - 2, panel_h - 2);
-    cairo_clip(cr);
+  /* Clip text to the panel interior so scrolled-off lines stay hidden. */
+  cairo_save(cr);
+  cairo_rectangle(cr, x + 1, y + 1, panel_w - 2, panel_h - 2);
+  cairo_clip(cr);
 
-    PangoLayout *l = pango_cairo_create_layout(cr);
-    PangoFontDescription *fd = pango_font_description_from_string("Monospace 10");
-    pango_layout_set_font_description(l, fd);
-    cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
-    int line_y = y + PAD_TOP - (int)a->help_scroll_y;
-    for (int i = 0; i < n_lines; i++) {
-        /* Skip lines entirely outside the panel to avoid wasted Pango work. */
-        if (line_y + LINE_H >= y && line_y <= y + panel_h) {
-            pango_layout_set_text(l, lines[i], -1);
-            cairo_move_to(cr, x + 20, line_y);
-            pango_cairo_show_layout(cr, l);
-        }
-        line_y += LINE_H;
+  PangoLayout *l = pango_cairo_create_layout(cr);
+  PangoFontDescription *fd = pango_font_description_from_string("Monospace 10");
+  pango_layout_set_font_description(l, fd);
+  cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
+  int line_y = y + PAD_TOP - (int)a->help_scroll_y;
+  for (int i = 0; i < n_lines; i++) {
+    /* Skip lines entirely outside the panel to avoid wasted Pango work. */
+    if (line_y + LINE_H >= y && line_y <= y + panel_h) {
+      pango_layout_set_text(l, lines[i], -1);
+      cairo_move_to(cr, x + 20, line_y);
+      pango_cairo_show_layout(cr, l);
     }
-    pango_font_description_free(fd);
-    g_object_unref(l);
+    line_y += LINE_H;
+  }
+  pango_font_description_free(fd);
+  g_object_unref(l);
 
-    cairo_restore(cr);
+  cairo_restore(cr);
 
-    /* Scrollbar: only drawn when content overflows. Sized + positioned in
-       proportion to the visible/total ratio. */
-    if (max_scroll > 0) {
-        double bar_track_h = panel_h - 8;
-        double bar_h = bar_track_h * (double)panel_h / (double)content_h;
-        if (bar_h < 16) bar_h = 16;
-        double bar_y = y + 4 + (a->help_scroll_y / max_scroll) * (bar_track_h - bar_h);
-        cairo_set_source_rgba(cr, c.text[0], c.text[1], c.text[2], 0.30);
-        cairo_rectangle(cr, x + panel_w - 6, bar_y, 3, bar_h);
-        cairo_fill(cr);
-    }
+  /* Scrollbar: only drawn when content overflows. Sized + positioned in
+     proportion to the visible/total ratio. */
+  if (max_scroll > 0) {
+    double bar_track_h = panel_h - 8;
+    double bar_h = bar_track_h * (double)panel_h / (double)content_h;
+    if (bar_h < 16)
+      bar_h = 16;
+    double bar_y =
+        y + 4 + (a->help_scroll_y / max_scroll) * (bar_track_h - bar_h);
+    cairo_set_source_rgba(cr, c.text[0], c.text[1], c.text[2], 0.30);
+    cairo_rectangle(cr, x + panel_w - 6, bar_y, 3, bar_h);
+    cairo_fill(cr);
+  }
 }
 
 /* Walk the litehtml tree looking for an element whose id="..." attribute
    matches. Returns null if not found. Iterative DFS; adversarial input
    can't blow the stack. */
-static litehtml::element::ptr find_by_id(litehtml::element::ptr root, const std::string &id) {
-    if (!root) return nullptr;
-    std::vector<litehtml::element::ptr> stack;
-    stack.push_back(root);
-    while (!stack.empty()) {
-        auto el = stack.back();
-        stack.pop_back();
-        if (!el) continue;
-        const char *cur = el->get_attr("id");
-        if (cur && id == cur) return el;
-        const auto &kids = el->children();
-        /* Push in reverse so siblings are popped left-to-right. */
-        for (auto it = kids.rbegin(); it != kids.rend(); ++it) stack.push_back(*it);
-    }
+static litehtml::element::ptr find_by_id(litehtml::element::ptr root,
+                                         const std::string &id) {
+  if (!root)
     return nullptr;
+  std::vector<litehtml::element::ptr> stack;
+  stack.push_back(root);
+  while (!stack.empty()) {
+    auto el = stack.back();
+    stack.pop_back();
+    if (!el)
+      continue;
+    const char *cur = el->get_attr("id");
+    if (cur && id == cur)
+      return el;
+    const auto &kids = el->children();
+    /* Push in reverse so siblings are popped left-to-right. */
+    for (auto it = kids.rbegin(); it != kids.rend(); ++it)
+      stack.push_back(*it);
+  }
+  return nullptr;
 }
 
 static void scroll_to_anchor(App *a, const std::string &id) {
-    if (!a->doc) return;
-    auto el = find_by_id(a->doc->root(), id);
-    if (!el) return;
-    litehtml::position p = el->get_placement();
-    a->scroll_x = 0;
-    a->scroll_y = (double)p.y * a->zoom;
-    clamp(a);
+  if (!a->doc)
+    return;
+  auto el = find_by_id(a->doc->root(), id);
+  if (!el)
+    return;
+  litehtml::position p = el->get_placement();
+  a->scroll_x = 0;
+  a->scroll_y = (double)p.y * a->zoom;
+  clamp(a);
 }
 
 /* Walk the litehtml tree looking for an <a> whose placement contains
@@ -1034,118 +1128,141 @@ static void scroll_to_anchor(App *a, const std::string &id) {
    to the enclosing anchor. That keeps this in lockstep with the "pointer"
    cursor litehtml reports from the very same hit test. */
 static std::string href_from_over(App *a) {
-    if (!a->doc) return "";
-    std::shared_ptr<const litehtml::element> el = a->doc->get_over_element();
-    while (el) {
-        const char *tag = el->get_tagName();
-        if (tag && (tag[0] == 'a' || tag[0] == 'A') && tag[1] == '\0') {
-            const char *href = el->get_attr("href");
-            if (href) return href;
-        }
-        el = el->parent();
-    }
+  if (!a->doc)
     return "";
+  std::shared_ptr<const litehtml::element> el = a->doc->get_over_element();
+  while (el) {
+    const char *tag = el->get_tagName();
+    if (tag && (tag[0] == 'a' || tag[0] == 'A') && tag[1] == '\0') {
+      const char *href = el->get_attr("href");
+      if (href)
+        return href;
+    }
+    el = el->parent();
+  }
+  return "";
 }
 
 /* Same, for callers holding a point that hasn't been hit-tested yet. */
 static std::string href_at(App *a, int doc_x, int doc_y) {
-    if (!a->doc) return "";
-    std::vector<litehtml::position> rb;
-    a->doc->on_mouse_over(doc_x, doc_y, doc_x, doc_y, rb);
-    return href_from_over(a);
+  if (!a->doc)
+    return "";
+  std::vector<litehtml::position> rb;
+  a->doc->on_mouse_over(doc_x, doc_y, doc_x, doc_y, rb);
+  return href_from_over(a);
 }
 
 /* Decode %XX percent-escapes. md4c percent-encodes spaces and non-ASCII bytes
    in hrefs (see md4c-html.c escape_map), so the path we get back must be
    decoded before it names a real file. Invalid escapes are passed through. */
 static std::string percent_decode(const std::string &s) {
-    std::string out;
-    out.reserve(s.size());
-    auto hex = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        return -1;
-    };
-    for (size_t i = 0; i < s.size(); i++) {
-        if (s[i] == '%' && i + 2 < s.size()) {
-            int hi = hex(s[i+1]), lo = hex(s[i+2]);
-            if (hi >= 0 && lo >= 0) { out += (char)((hi << 4) | lo); i += 2; continue; }
-        }
-        out += s[i];
+  std::string out;
+  out.reserve(s.size());
+  auto hex = [](char c) -> int {
+    if (c >= '0' && c <= '9')
+      return c - '0';
+    if (c >= 'a' && c <= 'f')
+      return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+      return c - 'A' + 10;
+    return -1;
+  };
+  for (size_t i = 0; i < s.size(); i++) {
+    if (s[i] == '%' && i + 2 < s.size()) {
+      int hi = hex(s[i + 1]), lo = hex(s[i + 2]);
+      if (hi >= 0 && lo >= 0) {
+        out += (char)((hi << 4) | lo);
+        i += 2;
+        continue;
+      }
     }
-    return out;
+    out += s[i];
+  }
+  return out;
 }
 
 /* Resolve a link href to a local .md file path.  Returns true and sets
    resolved_path if href points at a Markdown file reachable from current_file.
    Handles relative paths, file:// URLs, and optional #fragments (stripped). */
-static bool resolve_local_md(const std::string &href, const std::string &current_file,
-                              std::string &resolved_path) {
-    if (href.empty()) return false;
+static bool resolve_local_md(const std::string &href,
+                             const std::string &current_file,
+                             std::string &resolved_path) {
+  if (href.empty())
+    return false;
 
-    /* Reject non-file remote schemes (http, https, mailto, …). */
-    size_t scheme_end = href.find("://");
-    bool has_scheme = scheme_end != std::string::npos && scheme_end < 12;
-    std::string path;
-    if (has_scheme) {
-        std::string scheme = href.substr(0, scheme_end);
-        if (scheme != "file") return false;
-        /* file:///abs/path or file://host/path — skip past the authority. */
-        size_t path_start = href.find('/', scheme_end + 3);
-        if (path_start == std::string::npos) return false;
-        path = href.substr(path_start);
-    } else {
-        path = href;
-    }
+  /* Reject non-file remote schemes (http, https, mailto, …). */
+  size_t scheme_end = href.find("://");
+  bool has_scheme = scheme_end != std::string::npos && scheme_end < 12;
+  std::string path;
+  if (has_scheme) {
+    std::string scheme = href.substr(0, scheme_end);
+    if (scheme != "file")
+      return false;
+    /* file:///abs/path or file://host/path — skip past the authority. */
+    size_t path_start = href.find('/', scheme_end + 3);
+    if (path_start == std::string::npos)
+      return false;
+    path = href.substr(path_start);
+  } else {
+    path = href;
+  }
 
-    /* Strip fragment before decoding: a real fragment '#' is literal in the
-       href, while a '#' inside a filename arrives as %23. */
-    size_t hash = path.find('#');
-    if (hash != std::string::npos) path = path.substr(0, hash);
-    path = percent_decode(path);
-    if (path.empty()) return false;
+  /* Strip fragment before decoding: a real fragment '#' is literal in the
+     href, while a '#' inside a filename arrives as %23. */
+  size_t hash = path.find('#');
+  if (hash != std::string::npos)
+    path = path.substr(0, hash);
+  path = percent_decode(path);
+  if (path.empty())
+    return false;
 
-    /* Must end in .md or .markdown (case-insensitive). */
-    std::string lower = path;
-    for (char &c : lower) c = (char)tolower((unsigned char)c);
-    bool is_md = (lower.size() >= 3  && lower.compare(lower.size()-3, 3, ".md")       == 0)
-              || (lower.size() >= 9  && lower.compare(lower.size()-9, 9, ".markdown") == 0);
-    if (!is_md) return false;
+  /* Must end in .md or .markdown (case-insensitive). */
+  std::string lower = path;
+  for (char &c : lower)
+    c = (char)tolower((unsigned char)c);
+  bool is_md =
+      (lower.size() >= 3 && lower.compare(lower.size() - 3, 3, ".md") == 0) ||
+      (lower.size() >= 9 &&
+       lower.compare(lower.size() - 9, 9, ".markdown") == 0);
+  if (!is_md)
+    return false;
 
-    /* Resolve relative paths against the directory of the current file. */
-    std::string full;
-    if (path[0] != '/') {
-        size_t sl = current_file.find_last_of('/');
-        full = (sl != std::string::npos ? current_file.substr(0, sl + 1) : "./") + path;
-    } else {
-        full = path;
-    }
+  /* Resolve relative paths against the directory of the current file. */
+  std::string full;
+  if (path[0] != '/') {
+    size_t sl = current_file.find_last_of('/');
+    full = (sl != std::string::npos ? current_file.substr(0, sl + 1) : "./") +
+           path;
+  } else {
+    full = path;
+  }
 
-    char real[PATH_MAX];
-    if (!realpath(full.c_str(), real)) return false;
-    resolved_path = real;
-    return true;
+  char real[PATH_MAX];
+  if (!realpath(full.c_str(), real))
+    return false;
+  resolved_path = real;
+  return true;
 }
 
 /* Spawn xdg-open <url> detached. Double-fork pattern so the grandchild is
    re-parented to init and we don't need to waitpid it later. */
 static void open_external_url(const std::string &url) {
-    pid_t pid = fork();
-    if (pid < 0) return;
-    if (pid == 0) {
-        pid_t pid2 = fork();
-        if (pid2 == 0) {
-            /* Detach from controlling terminal so xdg-open can manage its
-               own children (browser etc.). */
-            setsid();
-            execlp("xdg-open", "xdg-open", url.c_str(), (char*)NULL);
-            _exit(127);
-        }
-        _exit(0);
+  pid_t pid = fork();
+  if (pid < 0)
+    return;
+  if (pid == 0) {
+    pid_t pid2 = fork();
+    if (pid2 == 0) {
+      /* Detach from controlling terminal so xdg-open can manage its
+         own children (browser etc.). */
+      setsid();
+      execlp("xdg-open", "xdg-open", url.c_str(), (char *)NULL);
+      _exit(127);
     }
-    /* Parent: reap the immediate child to avoid a zombie. */
-    waitpid(pid, NULL, 0);
+    _exit(0);
+  }
+  /* Parent: reap the immediate child to avoid a zombie. */
+  waitpid(pid, NULL, 0);
 }
 
 /* Forward decl. Full body lives further down with the rest of the
@@ -1154,126 +1271,144 @@ static void open_external_url(const std::string &url) {
 static void field_sel_range(int anchor, int cur, int *lo, int *hi);
 
 static void draw_search_bar(App *a, cairo_t *cr, int ww) {
-    int bh = SEARCH_BAR_H;
-    const Chrome &c = chrome(a);
+  int bh = SEARCH_BAR_H;
+  const Chrome &c = chrome(a);
 
-    cairo_set_source_rgba(cr, c.bg[0], c.bg[1], c.bg[2], 0.97);
-    cairo_rectangle(cr, 0, 0, ww, bh); cairo_fill(cr);
-    cairo_set_source_rgb(cr, c.sep[0], c.sep[1], c.sep[2]);
-    cairo_rectangle(cr, 0, bh - 1, ww, 1); cairo_fill(cr);
+  cairo_set_source_rgba(cr, c.bg[0], c.bg[1], c.bg[2], 0.97);
+  cairo_rectangle(cr, 0, 0, ww, bh);
+  cairo_fill(cr);
+  cairo_set_source_rgb(cr, c.sep[0], c.sep[1], c.sep[2]);
+  cairo_rectangle(cr, 0, bh - 1, ww, 1);
+  cairo_fill(cr);
 
-    PangoLayout *l = pango_cairo_create_layout(cr);
-    PangoFontDescription *fd = pango_font_description_from_string("Sans 13");
-    pango_layout_set_font_description(l, fd);
+  PangoLayout *l = pango_cairo_create_layout(cr);
+  PangoFontDescription *fd = pango_font_description_from_string("Sans 13");
+  pango_layout_set_font_description(l, fd);
 
-    /* "Find: <query>". Draw selection highlight first (if any), then label +
-       query, then caret. Both selection and caret are positioned by querying
-       the laid-out layout at the byte offset (label length + field offset). */
-    static const char LABEL[] = "Find: ";
-    std::string text = LABEL + a->search_query;
-    pango_layout_set_text(l, text.c_str(), -1);
-    int th_l = 0;
-    pango_layout_get_pixel_size(l, NULL, &th_l);
-    double ty = (bh - th_l) / 2.0;
-    const int LABEL_LEN = (int)(sizeof(LABEL) - 1);
+  /* "Find: <query>". Draw selection highlight first (if any), then label +
+     query, then caret. Both selection and caret are positioned by querying
+     the laid-out layout at the byte offset (label length + field offset). */
+  static const char LABEL[] = "Find: ";
+  std::string text = LABEL + a->search_query;
+  pango_layout_set_text(l, text.c_str(), -1);
+  int th_l = 0;
+  pango_layout_get_pixel_size(l, NULL, &th_l);
+  double ty = (bh - th_l) / 2.0;
+  const int LABEL_LEN = (int)(sizeof(LABEL) - 1);
 
-    if (a->search_anchor >= 0) {
-        int lo, hi;
-        field_sel_range(a->search_anchor, a->search_cursor, &lo, &hi);
-        if (hi > lo) {
-            PangoRectangle r_lo, r_hi;
-            pango_layout_get_cursor_pos(l, LABEL_LEN + lo, &r_lo, NULL);
-            pango_layout_get_cursor_pos(l, LABEL_LEN + hi, &r_hi, NULL);
-            double sx = 12 + (double)r_lo.x / PANGO_SCALE;
-            double ex = 12 + (double)r_hi.x / PANGO_SCALE;
-            cairo_set_source_rgba(cr, c.accent_bg[0], c.accent_bg[1],
-                                       c.accent_bg[2], c.accent_bg[3]);
-            cairo_rectangle(cr, sx, ty, ex - sx, th_l);
-            cairo_fill(cr);
-        }
+  if (a->search_anchor >= 0) {
+    int lo, hi;
+    field_sel_range(a->search_anchor, a->search_cursor, &lo, &hi);
+    if (hi > lo) {
+      PangoRectangle r_lo, r_hi;
+      pango_layout_get_cursor_pos(l, LABEL_LEN + lo, &r_lo, NULL);
+      pango_layout_get_cursor_pos(l, LABEL_LEN + hi, &r_hi, NULL);
+      double sx = 12 + (double)r_lo.x / PANGO_SCALE;
+      double ex = 12 + (double)r_hi.x / PANGO_SCALE;
+      cairo_set_source_rgba(cr, c.accent_bg[0], c.accent_bg[1], c.accent_bg[2],
+                            c.accent_bg[3]);
+      cairo_rectangle(cr, sx, ty, ex - sx, th_l);
+      cairo_fill(cr);
     }
+  }
 
-    cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
-    cairo_move_to(cr, 12, ty);
-    pango_cairo_show_layout(cr, l);
+  cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
+  cairo_move_to(cr, 12, ty);
+  pango_cairo_show_layout(cr, l);
 
-    PangoRectangle caret_rect;
-    pango_layout_get_cursor_pos(l, LABEL_LEN + a->search_cursor, &caret_rect, NULL);
-    double caret_x = 12 + (double)caret_rect.x / PANGO_SCALE;
-    cairo_rectangle(cr, caret_x, ty, 2, th_l);
-    cairo_fill(cr);
+  PangoRectangle caret_rect;
+  pango_layout_get_cursor_pos(l, LABEL_LEN + a->search_cursor, &caret_rect,
+                              NULL);
+  double caret_x = 12 + (double)caret_rect.x / PANGO_SCALE;
+  cairo_rectangle(cr, caret_x, ty, 2, th_l);
+  cairo_fill(cr);
 
-    /* Match count / hint (or red error tag for an invalid regex) */
-    bool regex_bad = a->regex_mode && !a->search_query.empty()
-                  && !CairoContainer::regex_is_valid(a->search_query, a->case_sensitive);
-    std::string count;
-    if (regex_bad)                           count = "Invalid regex";
-    else if (a->search_query.empty())        count = "Enter · Esc · Alt+C/W/R · Ctrl+⌫";
-    else if (a->search_matches.empty())      count = "No matches";
-    else                                     count = std::to_string(a->current_match + 1) + " / " +
-                                                     std::to_string(a->search_matches.size());
-    pango_layout_set_text(l, count.c_str(), -1);
-    int cnt_w = 0, cnt_h = 0;
-    pango_layout_get_pixel_size(l, &cnt_w, &cnt_h);
+  /* Match count / hint (or red error tag for an invalid regex) */
+  bool regex_bad =
+      a->regex_mode && !a->search_query.empty() &&
+      !CairoContainer::regex_is_valid(a->search_query, a->case_sensitive);
+  std::string count;
+  if (regex_bad)
+    count = "Invalid regex";
+  else if (a->search_query.empty())
+    count = "Enter · Esc · Alt+C/W/R · Ctrl+⌫";
+  else if (a->search_matches.empty())
+    count = "No matches";
+  else
+    count = std::to_string(a->current_match + 1) + " / " +
+            std::to_string(a->search_matches.size());
+  pango_layout_set_text(l, count.c_str(), -1);
+  int cnt_w = 0, cnt_h = 0;
+  pango_layout_get_pixel_size(l, &cnt_w, &cnt_h);
 
-    /* Three search-mode toggles, drawn right-to-left from just before the
-       count: ".*" (regex), "Word" (whole word), "Aa" (case-sensitive).
-       `slot` indexes into a->search_toggle_rects so click handlers can
-       hit-test what the user sees. */
-    auto draw_toggle = [&](int slot, const char *label, bool on, int x_right_edge,
-                           int *out_box_w) {
-        PangoLayout *li = pango_cairo_create_layout(cr);
-        PangoFontDescription *fdi = pango_font_description_from_string("Sans Bold 11");
-        pango_layout_set_font_description(li, fdi);
-        pango_layout_set_text(li, label, -1);
-        int iw = 0, ih = 0;
-        pango_layout_get_pixel_size(li, &iw, &ih);
-        int box_pad_x = 5, box_pad_y = 3;
-        int box_w_ = iw + box_pad_x * 2;
-        int box_h_ = ih + box_pad_y * 2;
-        int x_box  = x_right_edge - box_w_;
-        double y_box = (bh - box_h_) / 2.0;
-        bool hovered = (a->search_toggle_hover == slot);
-        a->search_toggle_rects[slot] = { x_box, (int)y_box, box_w_, box_h_ };
-        if (on) {
-            cairo_set_source_rgba(cr, c.accent_bg[0], c.accent_bg[1], c.accent_bg[2], c.accent_bg[3]);
-            cairo_rectangle(cr, x_box, y_box, box_w_, box_h_); cairo_fill(cr);
-            cairo_set_source_rgba(cr, c.accent[0], c.accent[1], c.accent[2], hovered ? 1.0 : 0.7);
-            cairo_set_line_width(cr, 1.0);
-            cairo_rectangle(cr, x_box + 0.5, y_box + 0.5, box_w_ - 1, box_h_ - 1); cairo_stroke(cr);
-            cairo_set_source_rgb(cr, c.accent[0], c.accent[1], c.accent[2]);
-        } else {
-            if (hovered) {
-                /* Soft hover background so the user sees the button is hot. */
-                cairo_set_source_rgba(cr, c.text[0], c.text[1], c.text[2], 0.08);
-                cairo_rectangle(cr, x_box, y_box, box_w_, box_h_); cairo_fill(cr);
-                cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
-            } else {
-                cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
-            }
-        }
-        cairo_move_to(cr, x_box + box_pad_x, (bh - ih) / 2.0);
-        pango_cairo_show_layout(cr, li);
-        pango_font_description_free(fdi);
-        g_object_unref(li);
-        *out_box_w = box_w_;
-    };
+  /* Three search-mode toggles, drawn right-to-left from just before the
+     count: ".*" (regex), "Word" (whole word), "Aa" (case-sensitive).
+     `slot` indexes into a->search_toggle_rects so click handlers can
+     hit-test what the user sees. */
+  auto draw_toggle = [&](int slot, const char *label, bool on, int x_right_edge,
+                         int *out_box_w) {
+    PangoLayout *li = pango_cairo_create_layout(cr);
+    PangoFontDescription *fdi =
+        pango_font_description_from_string("Sans Bold 11");
+    pango_layout_set_font_description(li, fdi);
+    pango_layout_set_text(li, label, -1);
+    int iw = 0, ih = 0;
+    pango_layout_get_pixel_size(li, &iw, &ih);
+    int box_pad_x = 5, box_pad_y = 3;
+    int box_w_ = iw + box_pad_x * 2;
+    int box_h_ = ih + box_pad_y * 2;
+    int x_box = x_right_edge - box_w_;
+    double y_box = (bh - box_h_) / 2.0;
+    bool hovered = (a->search_toggle_hover == slot);
+    a->search_toggle_rects[slot] = {x_box, (int)y_box, box_w_, box_h_};
+    if (on) {
+      cairo_set_source_rgba(cr, c.accent_bg[0], c.accent_bg[1], c.accent_bg[2],
+                            c.accent_bg[3]);
+      cairo_rectangle(cr, x_box, y_box, box_w_, box_h_);
+      cairo_fill(cr);
+      cairo_set_source_rgba(cr, c.accent[0], c.accent[1], c.accent[2],
+                            hovered ? 1.0 : 0.7);
+      cairo_set_line_width(cr, 1.0);
+      cairo_rectangle(cr, x_box + 0.5, y_box + 0.5, box_w_ - 1, box_h_ - 1);
+      cairo_stroke(cr);
+      cairo_set_source_rgb(cr, c.accent[0], c.accent[1], c.accent[2]);
+    } else {
+      if (hovered) {
+        /* Soft hover background so the user sees the button is hot. */
+        cairo_set_source_rgba(cr, c.text[0], c.text[1], c.text[2], 0.08);
+        cairo_rectangle(cr, x_box, y_box, box_w_, box_h_);
+        cairo_fill(cr);
+        cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
+      } else {
+        cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
+      }
+    }
+    cairo_move_to(cr, x_box + box_pad_x, (bh - ih) / 2.0);
+    pango_cairo_show_layout(cr, li);
+    pango_font_description_free(fdi);
+    g_object_unref(li);
+    *out_box_w = box_w_;
+  };
 
-    int x_right = ww - 12;
-    int x_count = x_right - cnt_w;
-    int x_cursor = x_count - 10;
-    int tw_box;
-    draw_toggle(2, ".*",   a->regex_mode,     x_cursor, &tw_box); x_cursor -= tw_box + 6;
-    draw_toggle(1, "Word", a->whole_word,     x_cursor, &tw_box); x_cursor -= tw_box + 6;
-    draw_toggle(0, "Aa",   a->case_sensitive, x_cursor, &tw_box);
+  int x_right = ww - 12;
+  int x_count = x_right - cnt_w;
+  int x_cursor = x_count - 10;
+  int tw_box;
+  draw_toggle(2, ".*", a->regex_mode, x_cursor, &tw_box);
+  x_cursor -= tw_box + 6;
+  draw_toggle(1, "Word", a->whole_word, x_cursor, &tw_box);
+  x_cursor -= tw_box + 6;
+  draw_toggle(0, "Aa", a->case_sensitive, x_cursor, &tw_box);
 
-    if (regex_bad) cairo_set_source_rgb(cr, 0.80, 0.20, 0.20);
-    else           cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
-    cairo_move_to(cr, x_count, (bh - cnt_h) / 2.0);
-    pango_cairo_show_layout(cr, l);
+  if (regex_bad)
+    cairo_set_source_rgb(cr, 0.80, 0.20, 0.20);
+  else
+    cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
+  cairo_move_to(cr, x_count, (bh - cnt_h) / 2.0);
+  pango_cairo_show_layout(cr, l);
 
-    pango_font_description_free(fd);
-    g_object_unref(l);
+  pango_font_description_free(fd);
+  g_object_unref(l);
 }
 
 /* ========================================================================= */
@@ -1291,255 +1426,302 @@ static void navigate_to(App *a, const std::string &abs_path);
 static void history_go(App *a, int dir);
 
 static const int MENU_ITEM_H = 26;
-static const int MENU_PAD_V  = 4;
-static const int MENU_W      = 220;
+static const int MENU_PAD_V = 4;
+static const int MENU_W = 220;
 
 static void menu_close(App *a) {
-    a->menu.visible = false;
-    a->menu.items.clear();
-    a->menu.hover_idx = -1;
+  a->menu.visible = false;
+  a->menu.items.clear();
+  a->menu.hover_idx = -1;
 }
 
 /* Build menu items based on right-click context: was the click over a link?
    does the selection contain anything? */
 static void menu_build(App *a, int doc_x, int doc_y) {
-    a->menu.items.clear();
-    std::string href = href_at(a, doc_x, doc_y);
-    if (!href.empty() && href[0] != '#') {
-        a->menu.items.push_back({"Open Link",     App::MenuAction::OpenLink, href, true});
-        a->menu.items.push_back({"Copy Link URL", App::MenuAction::CopyLink, href, true});
-    }
-    bool has_selection = a->con.selection().active &&
-                         !a->con.get_selected_text().empty();
-    a->menu.items.push_back({"Copy",           App::MenuAction::Copy,       "", has_selection});
-    a->menu.items.push_back({"Select All",     App::MenuAction::SelectAll,  "", a->doc != nullptr});
-    a->menu.items.push_back({"Find…",          App::MenuAction::Find,       "", true});
-    a->menu.items.push_back({"Reload",         App::MenuAction::Reload,     "", true});
-    a->menu.items.push_back({a->dark_mode ? "Use Light Theme" : "Use Dark Theme",
-                              App::MenuAction::ToggleDark, "", true});
+  a->menu.items.clear();
+  std::string href = href_at(a, doc_x, doc_y);
+  if (!href.empty() && href[0] != '#') {
+    a->menu.items.push_back(
+        {"Open Link", App::MenuAction::OpenLink, href, true});
+    a->menu.items.push_back(
+        {"Copy Link URL", App::MenuAction::CopyLink, href, true});
+  }
+  bool has_selection =
+      a->con.selection().active && !a->con.get_selected_text().empty();
+  a->menu.items.push_back({"Copy", App::MenuAction::Copy, "", has_selection});
+  a->menu.items.push_back(
+      {"Select All", App::MenuAction::SelectAll, "", a->doc != nullptr});
+  a->menu.items.push_back({"Find…", App::MenuAction::Find, "", true});
+  a->menu.items.push_back({"Reload", App::MenuAction::Reload, "", true});
+  a->menu.items.push_back({a->dark_mode ? "Use Light Theme" : "Use Dark Theme",
+                           App::MenuAction::ToggleDark, "", true});
 }
 
 /* Position the menu near (win_x, win_y), clamped so it stays in the window. */
 static void menu_open_at(App *a, int win_x, int win_y, int ww) {
-    if (a->menu.items.empty()) return;
-    a->menu.w = MENU_W;
-    a->menu.h = 2 * MENU_PAD_V + (int)a->menu.items.size() * MENU_ITEM_H;
-    a->menu.x = win_x;
-    a->menu.y = win_y;
-    if (a->menu.x + a->menu.w > ww)         a->menu.x = ww - a->menu.w;
-    if (a->menu.y + a->menu.h > a->vp_h)    a->menu.y = a->vp_h - a->menu.h;
-    if (a->menu.x < 0)                      a->menu.x = 0;
-    if (a->menu.y < 0)                      a->menu.y = 0;
-    a->menu.visible = true;
-    a->menu.hover_idx = -1;
+  if (a->menu.items.empty())
+    return;
+  a->menu.w = MENU_W;
+  a->menu.h = 2 * MENU_PAD_V + (int)a->menu.items.size() * MENU_ITEM_H;
+  a->menu.x = win_x;
+  a->menu.y = win_y;
+  if (a->menu.x + a->menu.w > ww)
+    a->menu.x = ww - a->menu.w;
+  if (a->menu.y + a->menu.h > a->vp_h)
+    a->menu.y = a->vp_h - a->menu.h;
+  if (a->menu.x < 0)
+    a->menu.x = 0;
+  if (a->menu.y < 0)
+    a->menu.y = 0;
+  a->menu.visible = true;
+  a->menu.hover_idx = -1;
 }
 
 static int menu_item_at(App *a, int x, int y) {
-    if (!a->menu.visible) return -1;
-    if (x < a->menu.x || x >= a->menu.x + a->menu.w) return -1;
-    if (y < a->menu.y + MENU_PAD_V || y >= a->menu.y + a->menu.h - MENU_PAD_V) return -1;
-    int idx = (y - a->menu.y - MENU_PAD_V) / MENU_ITEM_H;
-    if (idx < 0 || idx >= (int)a->menu.items.size()) return -1;
-    return idx;
+  if (!a->menu.visible)
+    return -1;
+  if (x < a->menu.x || x >= a->menu.x + a->menu.w)
+    return -1;
+  if (y < a->menu.y + MENU_PAD_V || y >= a->menu.y + a->menu.h - MENU_PAD_V)
+    return -1;
+  int idx = (y - a->menu.y - MENU_PAD_V) / MENU_ITEM_H;
+  if (idx < 0 || idx >= (int)a->menu.items.size())
+    return -1;
+  return idx;
 }
 
 static void draw_context_menu(App *a, cairo_t *cr) {
-    const Chrome &c = chrome(a);
+  const Chrome &c = chrome(a);
 
-    /* Card with light shadow border. */
-    cairo_set_source_rgba(cr, c.bg[0], c.bg[1], c.bg[2], 0.98);
-    cairo_rectangle(cr, a->menu.x, a->menu.y, a->menu.w, a->menu.h); cairo_fill(cr);
-    cairo_set_source_rgb(cr, c.sep[0], c.sep[1], c.sep[2]);
-    cairo_set_line_width(cr, 1.0);
-    cairo_rectangle(cr, a->menu.x + 0.5, a->menu.y + 0.5, a->menu.w - 1, a->menu.h - 1);
-    cairo_stroke(cr);
+  /* Card with light shadow border. */
+  cairo_set_source_rgba(cr, c.bg[0], c.bg[1], c.bg[2], 0.98);
+  cairo_rectangle(cr, a->menu.x, a->menu.y, a->menu.w, a->menu.h);
+  cairo_fill(cr);
+  cairo_set_source_rgb(cr, c.sep[0], c.sep[1], c.sep[2]);
+  cairo_set_line_width(cr, 1.0);
+  cairo_rectangle(cr, a->menu.x + 0.5, a->menu.y + 0.5, a->menu.w - 1,
+                  a->menu.h - 1);
+  cairo_stroke(cr);
 
-    PangoLayout *l = pango_cairo_create_layout(cr);
-    PangoFontDescription *fd = pango_font_description_from_string("Sans 11");
-    pango_layout_set_font_description(l, fd);
+  PangoLayout *l = pango_cairo_create_layout(cr);
+  PangoFontDescription *fd = pango_font_description_from_string("Sans 11");
+  pango_layout_set_font_description(l, fd);
 
-    for (size_t i = 0; i < a->menu.items.size(); i++) {
-        const auto &it = a->menu.items[i];
-        int row_y = a->menu.y + MENU_PAD_V + (int)i * MENU_ITEM_H;
-        if ((int)i == a->menu.hover_idx && it.enabled) {
-            cairo_set_source_rgba(cr, c.accent_bg[0], c.accent_bg[1], c.accent_bg[2], c.accent_bg[3]);
-            cairo_rectangle(cr, a->menu.x + 2, row_y, a->menu.w - 4, MENU_ITEM_H);
-            cairo_fill(cr);
-        }
-        pango_layout_set_text(l, it.label.c_str(), -1);
-        int tw_l = 0, th_l = 0;
-        pango_layout_get_pixel_size(l, &tw_l, &th_l);
-        if (it.enabled) cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
-        else            cairo_set_source_rgb(cr, c.dim[0],  c.dim[1],  c.dim[2]);
-        cairo_move_to(cr, a->menu.x + 14, row_y + (MENU_ITEM_H - th_l) / 2.0);
-        pango_cairo_show_layout(cr, l);
+  for (size_t i = 0; i < a->menu.items.size(); i++) {
+    const auto &it = a->menu.items[i];
+    int row_y = a->menu.y + MENU_PAD_V + (int)i * MENU_ITEM_H;
+    if ((int)i == a->menu.hover_idx && it.enabled) {
+      cairo_set_source_rgba(cr, c.accent_bg[0], c.accent_bg[1], c.accent_bg[2],
+                            c.accent_bg[3]);
+      cairo_rectangle(cr, a->menu.x + 2, row_y, a->menu.w - 4, MENU_ITEM_H);
+      cairo_fill(cr);
     }
+    pango_layout_set_text(l, it.label.c_str(), -1);
+    int tw_l = 0, th_l = 0;
+    pango_layout_get_pixel_size(l, &tw_l, &th_l);
+    if (it.enabled)
+      cairo_set_source_rgb(cr, c.text[0], c.text[1], c.text[2]);
+    else
+      cairo_set_source_rgb(cr, c.dim[0], c.dim[1], c.dim[2]);
+    cairo_move_to(cr, a->menu.x + 14, row_y + (MENU_ITEM_H - th_l) / 2.0);
+    pango_cairo_show_layout(cr, l);
+  }
 
-    pango_font_description_free(fd);
-    g_object_unref(l);
+  pango_font_description_free(fd);
+  g_object_unref(l);
 }
 
 /* Execute a menu action. Window pointer needed for redraw / clipboard. */
 static void menu_run(App *a, mdv_window *w, const App::MenuItem &it) {
-    if (!it.enabled) return;
-    switch (it.action) {
-    case App::MenuAction::OpenLink: {
-        std::string resolved;
-        if (resolve_local_md(it.param, a->file_path, resolved))
-            navigate_to(a, resolved);
-        else
-            open_external_url(it.param);
-        break;
-    }
-    case App::MenuAction::CopyLink:    mdv_window_copy_to_clipboard(w, it.param.c_str()); break;
-    case App::MenuAction::Copy: {
-        std::string t = a->con.get_selected_text();
-        if (!t.empty()) mdv_window_copy_to_clipboard(w, t.c_str());
-        break;
-    }
-    case App::MenuAction::SelectAll: {
-        Selection &s = a->con.selection();
-        s.anchor_x = 0; s.anchor_y = 0;
-        s.extent_x = a->doc_w; s.extent_y = a->doc_h;
-        s.active = true; s.dragging = false;
-        break;
-    }
-    case App::MenuAction::Find:        open_search(a, w); break;
-    case App::MenuAction::Reload:      reload_file(a);   break;
-    case App::MenuAction::ToggleDark:  toggle_dark_mode(a, w); break;
-    }
-    mdv_window_request_redraw(w);
+  if (!it.enabled)
+    return;
+  switch (it.action) {
+  case App::MenuAction::OpenLink: {
+    std::string resolved;
+    if (resolve_local_md(it.param, a->file_path, resolved))
+      navigate_to(a, resolved);
+    else
+      open_external_url(it.param);
+    break;
+  }
+  case App::MenuAction::CopyLink:
+    mdv_window_copy_to_clipboard(w, it.param.c_str());
+    break;
+  case App::MenuAction::Copy: {
+    std::string t = a->con.get_selected_text();
+    if (!t.empty())
+      mdv_window_copy_to_clipboard(w, t.c_str());
+    break;
+  }
+  case App::MenuAction::SelectAll: {
+    Selection &s = a->con.selection();
+    s.anchor_x = 0;
+    s.anchor_y = 0;
+    s.extent_x = a->doc_w;
+    s.extent_y = a->doc_h;
+    s.active = true;
+    s.dragging = false;
+    break;
+  }
+  case App::MenuAction::Find:
+    open_search(a, w);
+    break;
+  case App::MenuAction::Reload:
+    reload_file(a);
+    break;
+  case App::MenuAction::ToggleDark:
+    toggle_dark_mode(a, w);
+    break;
+  }
+  mdv_window_request_redraw(w);
 }
 
 /* ========================================================================= */
 
 static void on_redraw(mdv_window *w, cairo_t *cr, int ww, int hh, void *ud) {
-    App *a = (App*)ud;
-    /* Window-wide bg first (also paints behind the sidebar / status bar / search bar). */
-    if (a->dark_mode) cairo_set_source_rgb(cr, 0.118, 0.118, 0.118);
-    else              cairo_set_source_rgb(cr, 1, 1, 1);
-    cairo_paint(cr);
-    if (!a->doc) return;
+  App *a = (App *)ud;
+  /* Window-wide bg first (also paints behind the sidebar / status bar / search
+   * bar). */
+  const double *bg = a->dark_mode ? CHROME_DARK.bg : CHROME_LIGHT.bg;
 
-    int tw = toc_w(a);
+  cairo_set_source_rgb(cr, bg[0], bg[1], bg[2]);
+  cairo_paint(cr);
+  if (!a->doc)
+    return;
 
-    int dsx = (int)(a->scroll_x / a->zoom), dsy = (int)(a->scroll_y / a->zoom);
-    a->con.set_scroll_offset(dsy);
-    a->con.set_scroll_offset_x(dsx);
-    a->con.begin_record();
+  int tw = toc_w(a);
 
-    cairo_save(cr);
-    /* Clip + translate so doc rendering happens in the doc area only
-       (right of sidebar). We deliberately clip all the way down to hh
-       rather than vp_h: the status bar is drawn afterwards and overlays
-       the bottom STATUS_H pixels, so anything the doc paints there is
-       hidden. This avoids a thin "no draw" band at vp_h - 1 that some
-       layouts produce when cairo and litehtml disagree on the exact
-       clip boundary by a pixel. */
-    cairo_rectangle(cr, tw, 0, a->vp_w, hh); cairo_clip(cr);
-    cairo_translate(cr, tw, 0);
-    cairo_scale(cr, a->zoom, a->zoom);
+  int dsx = (int)(a->scroll_x / a->zoom), dsy = (int)(a->scroll_y / a->zoom);
+  a->con.set_scroll_offset(dsy);
+  a->con.set_scroll_offset_x(dsx);
+  a->con.begin_record();
 
-    /* Clip is in the same coordinate frame as element positions inside
-       litehtml's draw chain. Since we pass (-dsx, -dsy) as the root offset,
-       child elements compute pos = doc_pos + (-dsx, -dsy), i.e. in viewport
-       coords. A clip of (0, 0, doc_w, doc_h) therefore excludes anything
-       above the viewport (pos.y < 0) — including text we still want
-       recorded so find can match across the whole document. Pass the
-       document's full extent in viewport coords instead. */
-    litehtml::position clip(-dsx, -dsy, a->doc_w, a->doc_h);
-    a->con.set_render_cr(cr);
-    a->doc->draw((litehtml::uint_ptr)cr, -dsx, -dsy, &clip);
-    a->con.set_render_cr(nullptr);
+  cairo_save(cr);
+  /* Clip + translate so doc rendering happens in the doc area only
+     (right of sidebar). We deliberately clip all the way down to hh
+     rather than vp_h: the status bar is drawn afterwards and overlays
+     the bottom STATUS_H pixels, so anything the doc paints there is
+     hidden. This avoids a thin "no draw" band at vp_h - 1 that some
+     layouts produce when cairo and litehtml disagree on the exact
+     clip boundary by a pixel. */
+  cairo_rectangle(cr, tw, 0, a->vp_w, hh);
+  cairo_clip(cr);
+  cairo_translate(cr, tw, 0);
+  cairo_scale(cr, a->zoom, a->zoom);
 
-    /* Re-find matches against freshly-recorded spans if layout changed since last search */
-    refresh_search_matches(a, w);
+  /* Clip is in the same coordinate frame as element positions inside
+     litehtml's draw chain. Since we pass (-dsx, -dsy) as the root offset,
+     child elements compute pos = doc_pos + (-dsx, -dsy), i.e. in viewport
+     coords. A clip of (0, 0, doc_w, doc_h) therefore excludes anything
+     above the viewport (pos.y < 0) — including text we still want
+     recorded so find can match across the whole document. Pass the
+     document's full extent in viewport coords instead. */
+  litehtml::position clip(-dsx, -dsy, a->doc_w, a->doc_h);
+  a->con.set_render_cr(cr);
+  a->doc->draw((litehtml::uint_ptr)cr, -dsx, -dsy, &clip);
+  a->con.set_render_cr(nullptr);
 
-    a->con.draw_search_matches(cr, a->search_matches, a->current_match);
-    a->con.draw_selection_overlay(cr);
-    cairo_restore(cr);
+  /* Re-find matches against freshly-recorded spans if layout changed since last
+   * search */
+  refresh_search_matches(a, w);
 
-    /* Copy buttons over <pre> blocks. Drawn after the doc but before
-       scrollbars / sidebar so the buttons can be hovered through the
-       normal viewport input flow. */
-    draw_copy_buttons(a, cr);
+  a->con.draw_search_matches(cr, a->search_matches, a->current_match);
+  a->con.draw_selection_overlay(cr);
+  cairo_restore(cr);
 
-    /* Vertical scrollbar */
-    SBG sv = sbv(a);
-    if (sv.vis) {
-        double x = ww - SB_W;
-        cairo_set_source_rgba(cr, 0, 0, 0, 0.05);
-        cairo_rectangle(cr, x, 0, SB_W - 2, sv.track); cairo_fill(cr);
-        cairo_set_source_rgba(cr, 0, 0, 0, a->sb_v_drag ? 0.45 : 0.25);
-        cairo_rectangle(cr, x, sv.pos, SB_W - 2, sv.len); cairo_fill(cr);
-    }
+  /* Copy buttons over <pre> blocks. Drawn after the doc but before
+     scrollbars / sidebar so the buttons can be hovered through the
+     normal viewport input flow. */
+  draw_copy_buttons(a, cr);
 
-    /* Horizontal scrollbar: sits just above the status bar, not at the
-       window bottom edge. Offset by sidebar width. */
-    SBG sh = sbh(a);
-    if (sh.vis) {
-        double y = a->vp_h - SB_W;
-        cairo_set_source_rgba(cr, 0, 0, 0, 0.05);
-        cairo_rectangle(cr, tw, y, sh.track, SB_W - 2); cairo_fill(cr);
-        cairo_set_source_rgba(cr, 0, 0, 0, a->sb_h_drag ? 0.45 : 0.25);
-        cairo_rectangle(cr, tw + sh.pos, y, sh.len, SB_W - 2); cairo_fill(cr);
-    }
+  /* Vertical scrollbar */
+  SBG sv = sbv(a);
+  if (sv.vis) {
+    double x = ww - SB_W;
+    cairo_set_source_rgba(cr, 0, 0, 0, 0.05);
+    cairo_rectangle(cr, x, 0, SB_W - 2, sv.track);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, 0, 0, 0, a->sb_v_drag ? 0.45 : 0.25);
+    cairo_rectangle(cr, x, sv.pos, SB_W - 2, sv.len);
+    cairo_fill(cr);
+  }
 
-    /* TOC sidebar (drawn over doc bg, to the left of doc area). */
-    if (a->toc_visible) draw_sidebar(a, cr);
+  /* Horizontal scrollbar: sits just above the status bar, not at the
+     window bottom edge. Offset by sidebar width. */
+  SBG sh = sbh(a);
+  if (sh.vis) {
+    double y = a->vp_h - SB_W;
+    cairo_set_source_rgba(cr, 0, 0, 0, 0.05);
+    cairo_rectangle(cr, tw, y, sh.track, SB_W - 2);
+    cairo_fill(cr);
+    cairo_set_source_rgba(cr, 0, 0, 0, a->sb_h_drag ? 0.45 : 0.25);
+    cairo_rectangle(cr, tw + sh.pos, y, sh.len, SB_W - 2);
+    cairo_fill(cr);
+  }
 
-    /* Search bar overlay (drawn last, in viewport coords) */
-    if (a->search_active) draw_search_bar(a, cr, ww);
+  /* TOC sidebar (drawn over doc bg, to the left of doc area). */
+  if (a->toc_visible)
+    draw_sidebar(a, cr);
 
-    /* Status bar (always visible). */
-    draw_status_bar(a, cr, ww, hh);
+  /* Search bar overlay (drawn last, in viewport coords) */
+  if (a->search_active)
+    draw_search_bar(a, cr, ww);
 
-    /* Context menu (drawn just below the help overlay) */
-    if (a->menu.visible) draw_context_menu(a, cr);
+  /* Status bar (always visible). */
+  draw_status_bar(a, cr, ww, hh);
 
-    /* Help overlay (drawn on top of everything). */
-    if (a->help_visible) draw_help_overlay(a, cr, ww, hh);
+  /* Context menu (drawn just below the help overlay) */
+  if (a->menu.visible)
+    draw_context_menu(a, cr);
+
+  /* Help overlay (drawn on top of everything). */
+  if (a->help_visible)
+    draw_help_overlay(a, cr, ww, hh);
 }
 
 static void on_resize(mdv_window *w, int ww, int hh, void *ud) {
-    App *a = (App*)ud;
-    a->vp_w = ww - toc_w(a);          /* sidebar steals from doc width */
-    a->vp_h = hh - STATUS_H;          /* status bar always occupies bottom strip */
-    if (a->vp_w < 0) a->vp_w = 0;
-    if (a->vp_h < 0) a->vp_h = 0;
-    do_layout(a); mdv_window_request_redraw(w);
+  App *a = (App *)ud;
+  a->vp_w = ww - toc_w(a); /* sidebar steals from doc width */
+  a->vp_h = hh - STATUS_H; /* status bar always occupies bottom strip */
+  if (a->vp_w < 0)
+    a->vp_w = 0;
+  if (a->vp_h < 0)
+    a->vp_h = 0;
+  do_layout(a);
+  mdv_window_request_redraw(w);
 }
 
-static void on_scroll(mdv_window *w, int x, int y, double dx, double dy, uint32_t mods, void *ud) {
-    App *a = (App*)ud;
-    /* When the help overlay is up, the wheel scrolls it, never the
-       document. 18 px per tick matches the help's LINE_H so each notch
-       advances one line. */
-    if (a->help_visible) {
-        a->help_scroll_y += dy * 18.0;
-        mdv_window_request_redraw(w);
-        return;
-    }
-    /* Wheel over the sidebar scrolls the TOC list, not the document. */
-    if (a->toc_visible && x < SIDEBAR_W && y < a->vp_h) {
-        a->toc_scroll_y += dy * 3.0;
-        clamp_toc_scroll(a);
-        mdv_window_request_redraw(w);
-        return;
-    }
-    int tw = toc_w(a);
-    int x_eff = x - tw;
-    if (mods & MDV_MOD_CTRL) {
-        apply_zoom(a, a->zoom + ((dy < 0) ? ZOOM_STEP : -ZOOM_STEP), x_eff, y);
-    } else if (mods & MDV_MOD_SHIFT) {
-        a->scroll_x += (dy + dx) * 3.0;
-        clamp(a);
-    } else {
-        a->scroll_y += dy * 3.0;
-        a->scroll_x += dx * 3.0;
-        clamp(a);
-    }
+static void on_scroll(mdv_window *w, int x, int y, double dx, double dy,
+                      uint32_t mods, void *ud) {
+  App *a = (App *)ud;
+  /* When the help overlay is up, the wheel scrolls it, never the
+     document. 18 px per tick matches the help's LINE_H so each notch
+     advances one line. */
+  if (a->help_visible) {
+    a->help_scroll_y += dy * 18.0;
     mdv_window_request_redraw(w);
+    return;
+  }
+  /* Wheel over the sidebar scrolls the TOC list, not the document. */
+  if (a->toc_visible && x < SIDEBAR_W && y < a->vp_h) {
+    a->toc_scroll_y += dy * 3.0;
+    clamp_toc_scroll(a);
+    mdv_window_request_redraw(w);
+    return;
+  }
+  int tw = toc_w(a);
+  int x_eff = x - tw;
+  if (mods & MDV_MOD_CTRL) {
+    apply_zoom(a, a->zoom + ((dy < 0) ? ZOOM_STEP : -ZOOM_STEP), x_eff, y);
+  } else if (mods & MDV_MOD_SHIFT) {
+    a->scroll_x += (dy + dx) * 3.0;
+    clamp(a);
+  } else {
+    a->scroll_y += dy * 3.0;
+    a->scroll_x += dx * 3.0;
+    clamp(a);
+  }
+  mdv_window_request_redraw(w);
 }
 
 /* Update the selection's anchor/extent during a drag, respecting granularity.
@@ -1552,760 +1734,1073 @@ static void on_scroll(mdv_window *w, int x, int y, double dx, double dy, uint32_
    range exactly. Skip updates when the cursor lands somewhere with no
    word/line under it. */
 static void extend_selection_drag(App *a, int doc_x, int doc_y) {
-    Selection &sel = a->con.selection();
-    if (sel.granularity == Selection::GRAN_CHAR) {
-        sel.extent_x = doc_x;
-        /* Snap y to a line center, biased toward the anchor's line. When
-           the cursor is within ~SNAP_BIAS_PX of the anchor's y (typical
-           hand wobble during a horizontal drag) we keep extent on the
-           anchor's line; outside that range we snap to whichever line
-           the cursor actually entered. */
-        sel.extent_y = a->con.snap_y_to_line(doc_y, sel.anchor_y);
-        sel.active = true;
-        return;
-    }
-    TextRange curr = (sel.granularity == Selection::GRAN_WORD)
-        ? a->con.find_word_at(doc_x, doc_y)
-        : a->con.find_line_at(doc_x, doc_y);
-    if (!curr.found) return;
-    bool before_init = (curr.start_y < sel.init_start_y) ||
-                       (curr.start_y == sel.init_start_y && curr.end_x <= sel.init_start_x);
-    bool after_init  = (curr.end_y > sel.init_end_y) ||
-                       (curr.end_y == sel.init_end_y && curr.start_x >= sel.init_end_x);
-    if (before_init) {
-        sel.anchor_x = sel.init_end_x;   sel.anchor_y = sel.init_end_y;
-        sel.extent_x = curr.start_x;     sel.extent_y = curr.start_y;
-    } else if (after_init) {
-        sel.anchor_x = sel.init_start_x; sel.anchor_y = sel.init_start_y;
-        sel.extent_x = curr.end_x;       sel.extent_y = curr.end_y;
-    } else {
-        sel.anchor_x = sel.init_start_x; sel.anchor_y = sel.init_start_y;
-        sel.extent_x = sel.init_end_x;   sel.extent_y = sel.init_end_y;
-    }
+  Selection &sel = a->con.selection();
+  if (sel.granularity == Selection::GRAN_CHAR) {
+    sel.extent_x = doc_x;
+    /* Snap y to a line center, biased toward the anchor's line. When
+       the cursor is within ~SNAP_BIAS_PX of the anchor's y (typical
+       hand wobble during a horizontal drag) we keep extent on the
+       anchor's line; outside that range we snap to whichever line
+       the cursor actually entered. */
+    sel.extent_y = a->con.snap_y_to_line(doc_y, sel.anchor_y);
     sel.active = true;
+    return;
+  }
+  TextRange curr = (sel.granularity == Selection::GRAN_WORD)
+                       ? a->con.find_word_at(doc_x, doc_y)
+                       : a->con.find_line_at(doc_x, doc_y);
+  if (!curr.found)
+    return;
+  bool before_init =
+      (curr.start_y < sel.init_start_y) ||
+      (curr.start_y == sel.init_start_y && curr.end_x <= sel.init_start_x);
+  bool after_init =
+      (curr.end_y > sel.init_end_y) ||
+      (curr.end_y == sel.init_end_y && curr.start_x >= sel.init_end_x);
+  if (before_init) {
+    sel.anchor_x = sel.init_end_x;
+    sel.anchor_y = sel.init_end_y;
+    sel.extent_x = curr.start_x;
+    sel.extent_y = curr.start_y;
+  } else if (after_init) {
+    sel.anchor_x = sel.init_start_x;
+    sel.anchor_y = sel.init_start_y;
+    sel.extent_x = curr.end_x;
+    sel.extent_y = curr.end_y;
+  } else {
+    sel.anchor_x = sel.init_start_x;
+    sel.anchor_y = sel.init_start_y;
+    sel.extent_x = sel.init_end_x;
+    sel.extent_y = sel.init_end_y;
+  }
+  sel.active = true;
 }
 
 /* Update the status-bar link readout, redrawing only when it actually
    changes so a stationary pointer over a link doesn't churn frames. */
 static void set_hover_href(App *a, mdv_window *w, const std::string &h) {
-    if (a->hover_href == h) return;
-    a->hover_href = h;
-    mdv_window_request_redraw(w);
+  if (a->hover_href == h)
+    return;
+  a->hover_href = h;
+  mdv_window_request_redraw(w);
 }
 
 static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
-    App *a = (App*)ud;
-    a->mouse_x = x; a->mouse_y = y;
-    a->pointer_inside = true;
+  App *a = (App *)ud;
+  a->mouse_x = x;
+  a->mouse_y = y;
+  a->pointer_inside = true;
 
-    /* Drag-selection autoscroll. While a button is held the compositor
-       implicitly grabs the pointer to our surface, so motion keeps coming
-       with out-of-viewport coordinates instead of a wl_pointer.leave. If
-       we're dragging a selection and the pointer has crossed above or
-       below the doc viewport, kick autoscroll and short-circuit before
-       the sidebar/menu hover branches can return on us. */
-    if (a->con.selection().dragging && (y < 0 || y >= a->vp_h)) {
-        int dx2 = (int)((x - toc_w(a) + a->scroll_x) / a->zoom);
-        a->leave_x = dx2;
-        a->autoscroll_dir = (y < 0) ? -1 : 1;
-        mdv_window_set_tick_enabled(w, true);
-        mdv_window_request_redraw(w);
-        return;
+  /* Drag-selection autoscroll. While a button is held the compositor
+     implicitly grabs the pointer to our surface, so motion keeps coming
+     with out-of-viewport coordinates instead of a wl_pointer.leave. If
+     we're dragging a selection and the pointer has crossed above or
+     below the doc viewport, kick autoscroll and short-circuit before
+     the sidebar/menu hover branches can return on us. */
+  if (a->con.selection().dragging && (y < 0 || y >= a->vp_h)) {
+    int dx2 = (int)((x - toc_w(a) + a->scroll_x) / a->zoom);
+    a->leave_x = dx2;
+    a->autoscroll_dir = (y < 0) ? -1 : 1;
+    mdv_window_set_tick_enabled(w, true);
+    mdv_window_request_redraw(w);
+    return;
+  }
+
+  /* Context menu hover: when visible, takes over cursor handling. */
+  if (a->menu.visible) {
+    set_hover_href(a, w, "");
+    int idx = menu_item_at(a, x, y);
+    if (idx != a->menu.hover_idx) {
+      a->menu.hover_idx = idx;
+      mdv_window_request_redraw(w);
     }
+    mdv_window_set_cursor(w, "default");
+    return;
+  }
 
-    /* Context menu hover: when visible, takes over cursor handling. */
-    if (a->menu.visible) {
-        set_hover_href(a, w, "");
-        int idx = menu_item_at(a, x, y);
-        if (idx != a->menu.hover_idx) {
-            a->menu.hover_idx = idx;
-            mdv_window_request_redraw(w);
-        }
-        mdv_window_set_cursor(w, "default");
-        return;
+  /* Sidebar hover tracking */
+  if (a->toc_visible && x < SIDEBAR_W && y < a->vp_h) {
+    set_hover_href(a, w, "");
+    int idx = toc_index_at(a, x, y);
+    if (idx != a->toc_hover_idx) {
+      a->toc_hover_idx = idx;
+      mdv_window_request_redraw(w);
     }
+    mdv_window_set_cursor(w, "default");
+    return;
+  } else if (a->toc_hover_idx != -1) {
+    a->toc_hover_idx = -1;
+    mdv_window_request_redraw(w);
+  }
 
-    /* Sidebar hover tracking */
-    if (a->toc_visible && x < SIDEBAR_W && y < a->vp_h) {
-        set_hover_href(a, w, "");
-        int idx = toc_index_at(a, x, y);
-        if (idx != a->toc_hover_idx) {
-            a->toc_hover_idx = idx;
-            mdv_window_request_redraw(w);
-        }
-        mdv_window_set_cursor(w, "default");
-        return;
-    } else if (a->toc_hover_idx != -1) {
-        a->toc_hover_idx = -1;
-        mdv_window_request_redraw(w);
+  int tw = toc_w(a);
+  int x_eff = x - tw;
+
+  if (a->sb_v_drag) {
+    SBG sv = sbv(a);
+    double mt = a->vp_h - sv.len;
+    if (mt > 0) {
+      a->scroll_y = std::clamp((y - a->sb_drag_off) / mt, 0.0, 1.0) * max_sy(a);
+      clamp(a);
     }
-
-    int tw = toc_w(a);
-    int x_eff = x - tw;
-
-    if (a->sb_v_drag) {
-        SBG sv = sbv(a); double mt = a->vp_h - sv.len;
-        if (mt > 0) { a->scroll_y = std::clamp((y - a->sb_drag_off) / mt, 0.0, 1.0) * max_sy(a); clamp(a); }
-        mdv_window_request_redraw(w); return;
+    mdv_window_request_redraw(w);
+    return;
+  }
+  if (a->sb_h_drag) {
+    SBG sh = sbh(a);
+    double mt = a->vp_w - sh.len;
+    if (mt > 0) {
+      a->scroll_x =
+          std::clamp((x_eff - a->sb_drag_off) / mt, 0.0, 1.0) * max_sx(a);
+      clamp(a);
     }
-    if (a->sb_h_drag) {
-        SBG sh = sbh(a); double mt = a->vp_w - sh.len;
-        if (mt > 0) { a->scroll_x = std::clamp((x_eff - a->sb_drag_off) / mt, 0.0, 1.0) * max_sx(a); clamp(a); }
-        mdv_window_request_redraw(w); return;
+    mdv_window_request_redraw(w);
+    return;
+  }
+
+  /* Copy-button hover. Skipped while actively drag-selecting so the
+     drag doesn't break when the cursor sweeps past a button. */
+  if (!a->con.selection().dragging) {
+    int new_hover = copy_button_at(a, x, y);
+    if (new_hover != a->code_button_hover) {
+      a->code_button_hover = new_hover;
+      mdv_window_request_redraw(w);
     }
-
-    /* Copy-button hover. Skipped while actively drag-selecting so the
-       drag doesn't break when the cursor sweeps past a button. */
-    if (!a->con.selection().dragging) {
-        int new_hover = copy_button_at(a, x, y);
-        if (new_hover != a->code_button_hover) {
-            a->code_button_hover = new_hover;
-            mdv_window_request_redraw(w);
-        }
-        if (new_hover >= 0) {
-            set_hover_href(a, w, "");
-            mdv_window_set_cursor(w, "pointer");
-            return;
-        }
+    if (new_hover >= 0) {
+      set_hover_href(a, w, "");
+      mdv_window_set_cursor(w, "pointer");
+      return;
     }
+  }
 
-    /* Cursor: arrow over scrollbars/search bar/status bar. In the doc area
-       use I-beam only over actual rendered text; blank margins, gaps
-       between paragraphs, and image areas get the default arrow.
-       litehtml's set_cursor callback (registered in main) overrides this
-       to "pointer" when hovering an <a>, fired from doc->on_mouse_over
-       below. */
-    bool in_doc = false;   /* pointer is over the document, not the chrome */
-    { SBG sv = sbv(a); SBG sh = sbh(a);
-      bool over_sb = (sv.vis && x_eff >= a->vp_w - SB_W)
-                  || (sh.vis && y >= a->vp_h - SB_W && y < a->vp_h);
-      bool over_search_bar = a->search_active && y < SEARCH_BAR_H;
-      bool over_status_bar = y >= a->vp_h;
-      /* Search-bar mode-toggle hover: hit-test and refresh hover-index +
-         cursor. Done before the over_search_bar branch so a button gets the
-         pointer cursor instead of the default arrow. */
-      int new_st_hover = over_search_bar ? search_toggle_at(a, x, y) : -1;
-      if (new_st_hover != a->search_toggle_hover) {
-          a->search_toggle_hover = new_st_hover;
-          mdv_window_request_redraw(w);
-      }
-      if (new_st_hover >= 0) { set_hover_href(a, w, ""); mdv_window_set_cursor(w, "pointer"); return; }
-      if (over_sb || over_search_bar || over_status_bar) {
-          mdv_window_set_cursor(w, "default");
-      } else {
-          in_doc = true;
-          int dxd = (int)((x_eff + a->scroll_x) / a->zoom);
-          int dyd = (int)((y       + a->scroll_y) / a->zoom);
-          mdv_window_set_cursor(w, a->con.find_span_at(dxd, dyd) ? "text" : "default");
-      } }
-
-    Selection &sel = a->con.selection();
-    if (sel.dragging) {
-        /* The out-of-viewport case was caught at the top of this function;
-           here we're guaranteed in-viewport, so cancel any prior autoscroll
-           and just extend normally. */
-        set_hover_href(a, w, "");   /* dragging a selection isn't hovering */
-        a->autoscroll_dir = 0;
-        int dx2 = (int)((x_eff + a->scroll_x) / a->zoom);
-        int dy2 = (int)((y + a->scroll_y) / a->zoom);
-        extend_selection_drag(a, dx2, dy2);
-        mdv_window_set_tick_enabled(w, tick_on(a));
-        mdv_window_request_redraw(w); return;
+  /* Cursor: arrow over scrollbars/search bar/status bar. In the doc area
+     use I-beam only over actual rendered text; blank margins, gaps
+     between paragraphs, and image areas get the default arrow.
+     litehtml's set_cursor callback (registered in main) overrides this
+     to "pointer" when hovering an <a>, fired from doc->on_mouse_over
+     below. */
+  bool in_doc = false; /* pointer is over the document, not the chrome */
+  {
+    SBG sv = sbv(a);
+    SBG sh = sbh(a);
+    bool over_sb = (sv.vis && x_eff >= a->vp_w - SB_W) ||
+                   (sh.vis && y >= a->vp_h - SB_W && y < a->vp_h);
+    bool over_search_bar = a->search_active && y < SEARCH_BAR_H;
+    bool over_status_bar = y >= a->vp_h;
+    /* Search-bar mode-toggle hover: hit-test and refresh hover-index +
+       cursor. Done before the over_search_bar branch so a button gets the
+       pointer cursor instead of the default arrow. */
+    int new_st_hover = over_search_bar ? search_toggle_at(a, x, y) : -1;
+    if (new_st_hover != a->search_toggle_hover) {
+      a->search_toggle_hover = new_st_hover;
+      mdv_window_request_redraw(w);
     }
+    if (new_st_hover >= 0) {
+      set_hover_href(a, w, "");
+      mdv_window_set_cursor(w, "pointer");
+      return;
+    }
+    if (over_sb || over_search_bar || over_status_bar) {
+      mdv_window_set_cursor(w, "default");
+    } else {
+      in_doc = true;
+      int dxd = (int)((x_eff + a->scroll_x) / a->zoom);
+      int dyd = (int)((y + a->scroll_y) / a->zoom);
+      mdv_window_set_cursor(w,
+                            a->con.find_span_at(dxd, dyd) ? "text" : "default");
+    }
+  }
 
-    if (!a->doc) { set_hover_href(a, w, ""); return; }
-    int dx2 = (int)((x_eff + a->scroll_x) / a->zoom), dy2 = (int)((y + a->scroll_y) / a->zoom);
-    std::vector<litehtml::position> rb;
-    if (a->doc->on_mouse_over(dx2, dy2, dx2, dy2, rb)) mdv_window_request_redraw(w);
+  Selection &sel = a->con.selection();
+  if (sel.dragging) {
+    /* The out-of-viewport case was caught at the top of this function;
+       here we're guaranteed in-viewport, so cancel any prior autoscroll
+       and just extend normally. */
+    set_hover_href(a, w, ""); /* dragging a selection isn't hovering */
+    a->autoscroll_dir = 0;
+    int dx2 = (int)((x_eff + a->scroll_x) / a->zoom);
+    int dy2 = (int)((y + a->scroll_y) / a->zoom);
+    extend_selection_drag(a, dx2, dy2);
+    mdv_window_set_tick_enabled(w, tick_on(a));
+    mdv_window_request_redraw(w);
+    return;
+  }
 
-    /* Status-bar link readout, read straight off the hit test above. */
-    std::string h = in_doc ? href_from_over(a) : std::string();
-    set_hover_href(a, w, h.empty() ? h : percent_decode(h));
+  if (!a->doc) {
+    set_hover_href(a, w, "");
+    return;
+  }
+  int dx2 = (int)((x_eff + a->scroll_x) / a->zoom),
+      dy2 = (int)((y + a->scroll_y) / a->zoom);
+  std::vector<litehtml::position> rb;
+  if (a->doc->on_mouse_over(dx2, dy2, dx2, dy2, rb))
+    mdv_window_request_redraw(w);
+
+  /* Status-bar link readout, read straight off the hit test above. */
+  std::string h = in_doc ? href_from_over(a) : std::string();
+  set_hover_href(a, w, h.empty() ? h : percent_decode(h));
 }
 
-static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods, bool pr, int count, void *ud) {
-    App *a = (App*)ud;
-    int tw = toc_w(a);
+static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
+                            bool pr, int count, void *ud) {
+  App *a = (App *)ud;
+  int tw = toc_w(a);
 
-    /* Context menu: while it's visible, every press anywhere is consumed by
-       the menu (either running an item or dismissing). */
-    if (a->menu.visible) {
-        if (!pr) return;  /* releases pass through silently */
-        int idx = menu_item_at(a, x, y);
-        if (idx >= 0) {
-            App::MenuItem it = a->menu.items[idx];
-            menu_close(a);
-            menu_run(a, w, it);
+  /* Context menu: while it's visible, every press anywhere is consumed by
+     the menu (either running an item or dismissing). */
+  if (a->menu.visible) {
+    if (!pr)
+      return; /* releases pass through silently */
+    int idx = menu_item_at(a, x, y);
+    if (idx >= 0) {
+      App::MenuItem it = a->menu.items[idx];
+      menu_close(a);
+      menu_run(a, w, it);
+    } else {
+      menu_close(a);
+      mdv_window_request_redraw(w);
+    }
+    return;
+  }
+
+  /* Find-bar toggle click: flip the corresponding mode flag and re-run
+     the search. We check this before any document interaction so a click
+     inside the find bar can never fall through to the doc. */
+  if (btn == BTN_LEFT && pr && a->search_active && y < SEARCH_BAR_H) {
+    int slot = search_toggle_at(a, x, y);
+    if (slot >= 0) {
+      if (slot == 0)
+        a->case_sensitive = !a->case_sensitive;
+      else if (slot == 1)
+        a->whole_word = !a->whole_word;
+      else if (slot == 2)
+        a->regex_mode = !a->regex_mode;
+      a->match_count_dirty = true;
+      mdv_window_request_redraw(w);
+      return;
+    }
+  }
+
+  /* Copy-button click on a <pre> overlay. */
+  if (btn == BTN_LEFT && pr && a->code_button_hover >= 0 &&
+      a->code_button_hover < (int)a->code_blocks.size()) {
+    mdv_window_copy_to_clipboard(
+        w, a->code_blocks[a->code_button_hover].text.c_str());
+    a->code_copied_idx = a->code_button_hover;
+    clock_gettime(CLOCK_MONOTONIC, &a->code_copied_at);
+    mdv_window_set_tick_enabled(w, true);
+    mdv_window_request_redraw(w);
+    return;
+  }
+
+  /* Right-click in the doc area opens the menu. */
+  if (btn == BTN_RIGHT && pr) {
+    if (a->toc_visible && x < SIDEBAR_W)
+      return; /* not over sidebar */
+    if (a->search_active && y < SEARCH_BAR_H)
+      return; /* not over search bar */
+    if (y >= a->vp_h)
+      return; /* not over status bar */
+    int x_eff_r = x - tw;
+    int doc_x = (int)((x_eff_r + a->scroll_x) / a->zoom);
+    int doc_y = (int)((y + a->scroll_y) / a->zoom);
+    menu_build(a, doc_x, doc_y);
+    menu_open_at(a, x, y, mdv_window_width(w));
+    mdv_window_request_redraw(w);
+    return;
+  }
+
+  /* Sidebar: click on a TOC entry → scroll to anchor. */
+  if (btn == BTN_LEFT && pr && a->toc_visible && x < SIDEBAR_W && y < a->vp_h) {
+    int idx = toc_index_at(a, x, y);
+    if (idx >= 0 && !a->toc_entries[idx].id.empty()) {
+      scroll_to_anchor(a, a->toc_entries[idx].id);
+      mdv_window_request_redraw(w);
+    }
+    return;
+  }
+
+  int x_eff = x - tw;
+
+  if (btn == BTN_LEFT) {
+    if (pr) {
+      /* Vertical scrollbar */
+      SBG sv = sbv(a);
+      if (sv.vis && x_eff >= a->vp_w - SB_W) {
+        if (y >= sv.pos && y <= sv.pos + sv.len) {
+          a->sb_v_drag = true;
+          a->sb_drag_off = y - sv.pos;
         } else {
-            menu_close(a);
-            mdv_window_request_redraw(w);
+          double mt = a->vp_h - sv.len;
+          if (mt > 0) {
+            a->scroll_y =
+                std::clamp((y - sv.len / 2.0) / mt, 0.0, 1.0) * max_sy(a);
+            clamp(a);
+          }
         }
-        return;
-    }
-
-    /* Find-bar toggle click: flip the corresponding mode flag and re-run
-       the search. We check this before any document interaction so a click
-       inside the find bar can never fall through to the doc. */
-    if (btn == BTN_LEFT && pr && a->search_active && y < SEARCH_BAR_H) {
-        int slot = search_toggle_at(a, x, y);
-        if (slot >= 0) {
-            if      (slot == 0) a->case_sensitive = !a->case_sensitive;
-            else if (slot == 1) a->whole_word     = !a->whole_word;
-            else if (slot == 2) a->regex_mode     = !a->regex_mode;
-            a->match_count_dirty = true;
-            mdv_window_request_redraw(w);
-            return;
-        }
-    }
-
-    /* Copy-button click on a <pre> overlay. */
-    if (btn == BTN_LEFT && pr && a->code_button_hover >= 0
-     && a->code_button_hover < (int)a->code_blocks.size()) {
-        mdv_window_copy_to_clipboard(w, a->code_blocks[a->code_button_hover].text.c_str());
-        a->code_copied_idx = a->code_button_hover;
-        clock_gettime(CLOCK_MONOTONIC, &a->code_copied_at);
-        mdv_window_set_tick_enabled(w, true);
         mdv_window_request_redraw(w);
         return;
-    }
-
-    /* Right-click in the doc area opens the menu. */
-    if (btn == BTN_RIGHT && pr) {
-        if (a->toc_visible && x < SIDEBAR_W) return;       /* not over sidebar */
-        if (a->search_active && y < SEARCH_BAR_H) return;  /* not over search bar */
-        if (y >= a->vp_h)                       return;    /* not over status bar */
-        int x_eff_r = x - tw;
-        int doc_x = (int)((x_eff_r + a->scroll_x) / a->zoom);
-        int doc_y = (int)((y       + a->scroll_y) / a->zoom);
-        menu_build(a, doc_x, doc_y);
-        menu_open_at(a, x, y, mdv_window_width(w));
+      }
+      /* Horizontal scrollbar (only the strip just above the status bar) */
+      SBG sh = sbh(a);
+      if (sh.vis && y >= a->vp_h - SB_W && y < a->vp_h) {
+        if (x_eff >= sh.pos && x_eff <= sh.pos + sh.len) {
+          a->sb_h_drag = true;
+          a->sb_drag_off = x_eff - sh.pos;
+        } else {
+          double mt = a->vp_w - sh.len;
+          if (mt > 0) {
+            a->scroll_x =
+                std::clamp((x_eff - sh.len / 2.0) / mt, 0.0, 1.0) * max_sx(a);
+            clamp(a);
+          }
+        }
         mdv_window_request_redraw(w);
         return;
-    }
-
-    /* Sidebar: click on a TOC entry → scroll to anchor. */
-    if (btn == BTN_LEFT && pr && a->toc_visible && x < SIDEBAR_W && y < a->vp_h) {
-        int idx = toc_index_at(a, x, y);
-        if (idx >= 0 && !a->toc_entries[idx].id.empty()) {
-            scroll_to_anchor(a, a->toc_entries[idx].id);
-            mdv_window_request_redraw(w);
-        }
+      }
+      /* Click in search bar: keep focus, don't start selection */
+      if (a->search_active && y < SEARCH_BAR_H)
         return;
-    }
+      /* Click in status bar: nothing (yet) */
+      if (y >= a->vp_h)
+        return;
 
-    int x_eff = x - tw;
+      Selection &sel = a->con.selection();
+      int dx = (int)((x_eff + a->scroll_x) / a->zoom),
+          dy = (int)((y + a->scroll_y) / a->zoom);
 
-    if (btn == BTN_LEFT) {
-        if (pr) {
-            /* Vertical scrollbar */
-            SBG sv = sbv(a);
-            if (sv.vis && x_eff >= a->vp_w - SB_W) {
-                if (y >= sv.pos && y <= sv.pos + sv.len) { a->sb_v_drag = true; a->sb_drag_off = y - sv.pos; }
-                else { double mt = a->vp_h - sv.len; if (mt > 0) { a->scroll_y = std::clamp((y - sv.len/2.0) / mt, 0.0, 1.0) * max_sy(a); clamp(a); } }
-                mdv_window_request_redraw(w); return;
-            }
-            /* Horizontal scrollbar (only the strip just above the status bar) */
-            SBG sh = sbh(a);
-            if (sh.vis && y >= a->vp_h - SB_W && y < a->vp_h) {
-                if (x_eff >= sh.pos && x_eff <= sh.pos + sh.len) { a->sb_h_drag = true; a->sb_drag_off = x_eff - sh.pos; }
-                else { double mt = a->vp_w - sh.len; if (mt > 0) { a->scroll_x = std::clamp((x_eff - sh.len/2.0) / mt, 0.0, 1.0) * max_sx(a); clamp(a); } }
-                mdv_window_request_redraw(w); return;
-            }
-            /* Click in search bar: keep focus, don't start selection */
-            if (a->search_active && y < SEARCH_BAR_H) return;
-            /* Click in status bar: nothing (yet) */
-            if (y >= a->vp_h) return;
-
-            Selection &sel = a->con.selection();
-            int dx = (int)((x_eff + a->scroll_x) / a->zoom), dy = (int)((y + a->scroll_y) / a->zoom);
-
-            /* Double-click → word; triple-click → line. Shift falls through to
-               char-level extend (the existing shift+click behavior). */
-            if (count == 2 && !(mods & MDV_MOD_SHIFT)) {
-                TextRange tr = a->con.find_word_at(dx, dy);
-                if (tr.found) {
-                    sel.granularity = Selection::GRAN_WORD;
-                    sel.init_start_x = tr.start_x; sel.init_start_y = tr.start_y;
-                    sel.init_end_x   = tr.end_x;   sel.init_end_y   = tr.end_y;
-                    sel.anchor_x = tr.start_x; sel.anchor_y = tr.start_y;
-                    sel.extent_x = tr.end_x;   sel.extent_y = tr.end_y;
-                    sel.active = true; sel.dragging = true;
-                    mdv_window_request_redraw(w);
-                    return;
-                }
-            } else if (count == 3 && !(mods & MDV_MOD_SHIFT)) {
-                TextRange tr = a->con.find_line_at(dx, dy);
-                if (tr.found) {
-                    sel.granularity = Selection::GRAN_LINE;
-                    sel.init_start_x = tr.start_x; sel.init_start_y = tr.start_y;
-                    sel.init_end_x   = tr.end_x;   sel.init_end_y   = tr.end_y;
-                    sel.anchor_x = tr.start_x; sel.anchor_y = tr.start_y;
-                    sel.extent_x = tr.end_x;   sel.extent_y = tr.end_y;
-                    sel.active = true; sel.dragging = true;
-                    mdv_window_request_redraw(w);
-                    return;
-                }
-            }
-
-            sel.granularity = Selection::GRAN_CHAR;
-            /* Snap click y to a line center. Clicking between two words on
-               line A would otherwise leave anchor_y at the click's raw y
-               (which might be a few px above/below cy_A), and a later
-               drag whose extent's y wobbles to the opposite side of cy_A
-               then trips get_ordered into swapping sx/ex with both points
-               nominally still on line A. Snapping at storage keeps the
-               anchor y firmly on its line. */
-            int dy_snap = a->con.snap_y_to_line(dy);
-            if ((mods & MDV_MOD_SHIFT) && sel.active) { sel.extent_x = dx; sel.extent_y = dy_snap; sel.dragging = true; }
-            else { sel.anchor_x = dx; sel.anchor_y = dy_snap; sel.extent_x = dx; sel.extent_y = dy_snap; sel.dragging = true; sel.active = false; }
-            mdv_window_request_redraw(w);
-        } else {
-            if (a->sb_v_drag) { a->sb_v_drag = false; mdv_window_request_redraw(w); return; }
-            if (a->sb_h_drag) { a->sb_h_drag = false; mdv_window_request_redraw(w); return; }
-            Selection &sel = a->con.selection();
-            if (sel.dragging) {
-                sel.dragging = false; a->autoscroll_dir = 0;
-                mdv_window_set_tick_enabled(w, tick_on(a));
-                /* Tiny char-level drags clear the selection (treats it as a
-                   click, not a drag). Word/line selections are kept whole. */
-                if (sel.granularity == Selection::GRAN_CHAR) {
-                    int ddx = sel.anchor_x - sel.extent_x, ddy = sel.anchor_y - sel.extent_y;
-                    if (ddx*ddx + ddy*ddy < 16) sel.clear();
-                }
-                mdv_window_request_redraw(w);
-            }
+      /* Double-click → word; triple-click → line. Shift falls through to
+         char-level extend (the existing shift+click behavior). */
+      if (count == 2 && !(mods & MDV_MOD_SHIFT)) {
+        TextRange tr = a->con.find_word_at(dx, dy);
+        if (tr.found) {
+          sel.granularity = Selection::GRAN_WORD;
+          sel.init_start_x = tr.start_x;
+          sel.init_start_y = tr.start_y;
+          sel.init_end_x = tr.end_x;
+          sel.init_end_y = tr.end_y;
+          sel.anchor_x = tr.start_x;
+          sel.anchor_y = tr.start_y;
+          sel.extent_x = tr.end_x;
+          sel.extent_y = tr.end_y;
+          sel.active = true;
+          sel.dragging = true;
+          mdv_window_request_redraw(w);
+          return;
         }
-    }
-    if (btn != BTN_LEFT) return;  /* litehtml only models left-button events */
-    if (!a->doc) return;
-    int dx = (int)((x_eff + a->scroll_x) / a->zoom), dy = (int)((y + a->scroll_y) / a->zoom);
-    std::vector<litehtml::position> rb;
-    if (pr) a->doc->on_lbutton_down(dx, dy, dx, dy, rb);
-    else    a->doc->on_lbutton_up(dx, dy, dx, dy, rb);
+      } else if (count == 3 && !(mods & MDV_MOD_SHIFT)) {
+        TextRange tr = a->con.find_line_at(dx, dy);
+        if (tr.found) {
+          sel.granularity = Selection::GRAN_LINE;
+          sel.init_start_x = tr.start_x;
+          sel.init_start_y = tr.start_y;
+          sel.init_end_x = tr.end_x;
+          sel.init_end_y = tr.end_y;
+          sel.anchor_x = tr.start_x;
+          sel.anchor_y = tr.start_y;
+          sel.extent_x = tr.end_x;
+          sel.extent_y = tr.end_y;
+          sel.active = true;
+          sel.dragging = true;
+          mdv_window_request_redraw(w);
+          return;
+        }
+      }
 
-    /* on_lbutton_up may have queued a local-link navigation (see App::
-       pending_nav). Run it now, after litehtml's dispatch has returned, so
-       rebuilding a->doc can't free the document while it's still on the stack. */
-    if (!a->pending_nav.empty()) {
-        std::string target;
-        target.swap(a->pending_nav);
-        navigate_to(a, target);
+      sel.granularity = Selection::GRAN_CHAR;
+      /* Snap click y to a line center. Clicking between two words on
+         line A would otherwise leave anchor_y at the click's raw y
+         (which might be a few px above/below cy_A), and a later
+         drag whose extent's y wobbles to the opposite side of cy_A
+         then trips get_ordered into swapping sx/ex with both points
+         nominally still on line A. Snapping at storage keeps the
+         anchor y firmly on its line. */
+      int dy_snap = a->con.snap_y_to_line(dy);
+      if ((mods & MDV_MOD_SHIFT) && sel.active) {
+        sel.extent_x = dx;
+        sel.extent_y = dy_snap;
+        sel.dragging = true;
+      } else {
+        sel.anchor_x = dx;
+        sel.anchor_y = dy_snap;
+        sel.extent_x = dx;
+        sel.extent_y = dy_snap;
+        sel.dragging = true;
+        sel.active = false;
+      }
+      mdv_window_request_redraw(w);
+    } else {
+      if (a->sb_v_drag) {
+        a->sb_v_drag = false;
+        mdv_window_request_redraw(w);
+        return;
+      }
+      if (a->sb_h_drag) {
+        a->sb_h_drag = false;
+        mdv_window_request_redraw(w);
+        return;
+      }
+      Selection &sel = a->con.selection();
+      if (sel.dragging) {
+        sel.dragging = false;
+        a->autoscroll_dir = 0;
+        mdv_window_set_tick_enabled(w, tick_on(a));
+        /* Tiny char-level drags clear the selection (treats it as a
+           click, not a drag). Word/line selections are kept whole. */
+        if (sel.granularity == Selection::GRAN_CHAR) {
+          int ddx = sel.anchor_x - sel.extent_x,
+              ddy = sel.anchor_y - sel.extent_y;
+          if (ddx * ddx + ddy * ddy < 16)
+            sel.clear();
+        }
+        mdv_window_request_redraw(w);
+      }
     }
+  }
+  if (btn != BTN_LEFT)
+    return; /* litehtml only models left-button events */
+  if (!a->doc)
+    return;
+  int dx = (int)((x_eff + a->scroll_x) / a->zoom),
+      dy = (int)((y + a->scroll_y) / a->zoom);
+  std::vector<litehtml::position> rb;
+  if (pr)
+    a->doc->on_lbutton_down(dx, dy, dx, dy, rb);
+  else
+    a->doc->on_lbutton_up(dx, dy, dx, dy, rb);
+
+  /* on_lbutton_up may have queued a local-link navigation (see App::
+     pending_nav). Run it now, after litehtml's dispatch has returned, so
+     rebuilding a->doc can't free the document while it's still on the stack. */
+  if (!a->pending_nav.empty()) {
+    std::string target;
+    target.swap(a->pending_nav);
+    navigate_to(a, target);
+  }
 }
 
 static void on_pointer_leave(mdv_window *w, int lx, int ly, void *ud) {
-    App *a = (App*)ud; Selection &sel = a->con.selection();
-    a->pointer_inside = false;
-    set_hover_href(a, w, "");   /* nothing is hovered once the pointer is gone */
-    if (!sel.dragging) return;
-    a->leave_x = (int)((lx - toc_w(a) + a->scroll_x) / a->zoom);
-    a->autoscroll_dir = (ly < a->vp_h / 2) ? -1 : 1;
-    mdv_window_set_tick_enabled(w, true);
+  App *a = (App *)ud;
+  Selection &sel = a->con.selection();
+  a->pointer_inside = false;
+  set_hover_href(a, w, ""); /* nothing is hovered once the pointer is gone */
+  if (!sel.dragging)
+    return;
+  a->leave_x = (int)((lx - toc_w(a) + a->scroll_x) / a->zoom);
+  a->autoscroll_dir = (ly < a->vp_h / 2) ? -1 : 1;
+  mdv_window_set_tick_enabled(w, true);
 }
 
 static void on_pointer_enter(mdv_window *w, int x, int y, void *ud) {
-    App *a = (App*)ud; a->autoscroll_dir = 0;
-    a->pointer_inside = true;
-    mdv_window_set_tick_enabled(w, tick_on(a));
-    Selection &sel = a->con.selection();
-    if (sel.dragging) {
-        int dx2 = (int)((x - toc_w(a) + a->scroll_x) / a->zoom);
-        int dy2 = (int)((y + a->scroll_y) / a->zoom);
-        extend_selection_drag(a, dx2, dy2);
-        mdv_window_request_redraw(w);
-    }
+  App *a = (App *)ud;
+  a->autoscroll_dir = 0;
+  a->pointer_inside = true;
+  mdv_window_set_tick_enabled(w, tick_on(a));
+  Selection &sel = a->con.selection();
+  if (sel.dragging) {
+    int dx2 = (int)((x - toc_w(a) + a->scroll_x) / a->zoom);
+    int dy2 = (int)((y + a->scroll_y) / a->zoom);
+    extend_selection_drag(a, dx2, dy2);
+    mdv_window_request_redraw(w);
+  }
 }
 
-static void on_pinch(mdv_window *w, double scale, int cx, int cy, bool finished, void *ud) {
-    App *a = (App*)ud;
-    if (finished) return;
-    if (std::abs(scale - 1.0) < 0.001) { a->pinch_base_zoom = a->zoom; return; }
-    apply_zoom(a, a->pinch_base_zoom * scale, cx - toc_w(a), cy);
-    mdv_window_request_redraw(w);
+static void on_pinch(mdv_window *w, double scale, int cx, int cy, bool finished,
+                     void *ud) {
+  App *a = (App *)ud;
+  if (finished)
+    return;
+  if (std::abs(scale - 1.0) < 0.001) {
+    a->pinch_base_zoom = a->zoom;
+    return;
+  }
+  apply_zoom(a, a->pinch_base_zoom * scale, cx - toc_w(a), cy);
+  mdv_window_request_redraw(w);
 }
 
 static void on_tick(mdv_window *w, void *ud) {
-    App *a = (App*)ud; bool dirty = false;
-    Selection &sel = a->con.selection();
-    if (sel.dragging && a->autoscroll_dir != 0) {
-        a->scroll_y += a->autoscroll_dir * AUTOSCROLL_SPD; clamp(a);
-        int target_y = (a->autoscroll_dir < 0) ? (int)(a->scroll_y / a->zoom)
-                                               : (int)((a->scroll_y + a->vp_h) / a->zoom);
-        extend_selection_drag(a, a->leave_x, target_y);
-        dirty = true;
+  App *a = (App *)ud;
+  bool dirty = false;
+  Selection &sel = a->con.selection();
+  if (sel.dragging && a->autoscroll_dir != 0) {
+    a->scroll_y += a->autoscroll_dir * AUTOSCROLL_SPD;
+    clamp(a);
+    int target_y = (a->autoscroll_dir < 0)
+                       ? (int)(a->scroll_y / a->zoom)
+                       : (int)((a->scroll_y + a->vp_h) / a->zoom);
+    extend_selection_drag(a, a->leave_x, target_y);
+    dirty = true;
+  }
+  if (a->key_scrolling && a->scroll_vel != 0) {
+    a->scroll_y += a->scroll_vel;
+    clamp(a);
+    dirty = true;
+  }
+  /* Expire the "Copied!" label after COPIED_FEEDBACK_MS. */
+  if (a->code_copied_idx >= 0) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    long elapsed_ms = (now.tv_sec - a->code_copied_at.tv_sec) * 1000L +
+                      (now.tv_nsec - a->code_copied_at.tv_nsec) / 1000000L;
+    if (elapsed_ms >= COPIED_FEEDBACK_MS) {
+      a->code_copied_idx = -1;
+      dirty = true;
     }
-    if (a->key_scrolling && a->scroll_vel != 0) { a->scroll_y += a->scroll_vel; clamp(a); dirty = true; }
-    /* Expire the "Copied!" label after COPIED_FEEDBACK_MS. */
-    if (a->code_copied_idx >= 0) {
-        struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
-        long elapsed_ms = (now.tv_sec - a->code_copied_at.tv_sec) * 1000L
-                        + (now.tv_nsec - a->code_copied_at.tv_nsec) / 1000000L;
-        if (elapsed_ms >= COPIED_FEEDBACK_MS) {
-            a->code_copied_idx = -1;
-            dirty = true;
-        }
-    }
-    if (!tick_on(a)) mdv_window_set_tick_enabled(w, false);
-    if (dirty) mdv_window_request_redraw(w);
+  }
+  if (!tick_on(a))
+    mdv_window_set_tick_enabled(w, false);
+  if (dirty)
+    mdv_window_request_redraw(w);
 }
 
-static void start_ks(App *a, mdv_window *w, double v) { a->scroll_vel = v; a->key_scrolling = true; mdv_window_set_tick_enabled(w, true); }
-static void stop_ks(App *a, mdv_window *w) { a->scroll_vel = 0; a->key_scrolling = false; a->space_held = false; if (!tick_on(a)) mdv_window_set_tick_enabled(w, false); }
+static void start_ks(App *a, mdv_window *w, double v) {
+  a->scroll_vel = v;
+  a->key_scrolling = true;
+  mdv_window_set_tick_enabled(w, true);
+}
+static void stop_ks(App *a, mdv_window *w) {
+  a->scroll_vel = 0;
+  a->key_scrolling = false;
+  a->space_held = false;
+  if (!tick_on(a))
+    mdv_window_set_tick_enabled(w, false);
+}
 
 /* UTF-8 codepoint boundary helpers for the find-bar text cursor. */
 static int utf8_prev_boundary(const std::string &s, int i) {
-    if (i <= 0) return 0;
+  if (i <= 0)
+    return 0;
+  i--;
+  while (i > 0 && (((unsigned char)s[i]) & 0xC0) == 0x80)
     i--;
-    while (i > 0 && (((unsigned char)s[i]) & 0xC0) == 0x80) i--;
-    return i;
+  return i;
 }
 static int utf8_next_boundary(const std::string &s, int i) {
-    int n = (int)s.size();
-    if (i >= n) return n;
+  int n = (int)s.size();
+  if (i >= n)
+    return n;
+  i++;
+  while (i < n && (((unsigned char)s[i]) & 0xC0) == 0x80)
     i++;
-    while (i < n && (((unsigned char)s[i]) & 0xC0) == 0x80) i++;
-    return i;
+  return i;
 }
 
 /* Selection accessors. When anchor < 0 the field has no selection and lo/hi
    collapse to the cursor. */
 static void field_sel_range(int anchor, int cur, int *lo, int *hi) {
-    if (anchor < 0) { *lo = cur; *hi = cur; return; }
-    if (anchor <= cur) { *lo = anchor; *hi = cur; }
-    else               { *lo = cur;    *hi = anchor; }
+  if (anchor < 0) {
+    *lo = cur;
+    *hi = cur;
+    return;
+  }
+  if (anchor <= cur) {
+    *lo = anchor;
+    *hi = cur;
+  } else {
+    *lo = cur;
+    *hi = anchor;
+  }
 }
 
 /* If a selection exists, erase its range and collapse the cursor onto its
    start. Always clears the anchor. Returns whether any bytes were removed. */
 static bool field_delete_sel(std::string &s, int &cur, int &anchor) {
-    if (anchor < 0) return false;
-    int lo, hi; field_sel_range(anchor, cur, &lo, &hi);
-    bool removed = (hi > lo);
-    if (removed) s.erase((size_t)lo, (size_t)(hi - lo));
-    cur = lo;
-    anchor = -1;
-    return removed;
+  if (anchor < 0)
+    return false;
+  int lo, hi;
+  field_sel_range(anchor, cur, &lo, &hi);
+  bool removed = (hi > lo);
+  if (removed)
+    s.erase((size_t)lo, (size_t)(hi - lo));
+  cur = lo;
+  anchor = -1;
+  return removed;
 }
 
 /* Apply a movement: if shift is held we open or extend a selection (anchor
    kept at the original position); otherwise the cursor collapses any existing
    selection and moves freely. `new_cur` is where the cursor wants to land. */
 static void field_move_to(int &cur, int &anchor, int new_cur, bool shift) {
-    if (shift) {
-        if (anchor < 0) anchor = cur;
-        cur = new_cur;
-        if (anchor == cur) anchor = -1;
-    } else {
-        anchor = -1;
-        cur = new_cur;
-    }
+  if (shift) {
+    if (anchor < 0)
+      anchor = cur;
+    cur = new_cur;
+    if (anchor == cur)
+      anchor = -1;
+  } else {
+    anchor = -1;
+    cur = new_cur;
+  }
 }
 
 /* Delete the codepoint before the cursor and move cursor back to that
    position. Returns true if anything was removed. */
 static bool field_backspace(std::string &s, int &cur, int &anchor) {
-    if (field_delete_sel(s, cur, anchor)) return true;
-    if (cur <= 0) return false;
-    int p = utf8_prev_boundary(s, cur);
-    s.erase((size_t)p, (size_t)(cur - p));
-    cur = p;
+  if (field_delete_sel(s, cur, anchor))
     return true;
+  if (cur <= 0)
+    return false;
+  int p = utf8_prev_boundary(s, cur);
+  s.erase((size_t)p, (size_t)(cur - p));
+  cur = p;
+  return true;
 }
 
 /* Delete the codepoint at the cursor (forward delete). */
 static bool field_delete(std::string &s, int &cur, int &anchor) {
-    if (field_delete_sel(s, cur, anchor)) return true;
-    if (cur >= (int)s.size()) return false;
-    int p = utf8_next_boundary(s, cur);
-    s.erase((size_t)cur, (size_t)(p - cur));
+  if (field_delete_sel(s, cur, anchor))
     return true;
+  if (cur >= (int)s.size())
+    return false;
+  int p = utf8_next_boundary(s, cur);
+  s.erase((size_t)cur, (size_t)(p - cur));
+  return true;
 }
 
 /* Ctrl+Backspace style word delete from cursor backwards: if there's a
    selection, that's deleted instead. Otherwise skip whitespace immediately
    before the cursor, then delete back to the next whitespace boundary. */
 static bool field_delete_word_back(std::string &s, int &cur, int &anchor) {
-    if (field_delete_sel(s, cur, anchor)) return true;
-    if (cur <= 0) return false;
-    int i = cur;
-    while (i > 0 && isspace((unsigned char)s[i - 1])) i--;
-    while (i > 0 && !isspace((unsigned char)s[i - 1])) i--;
-    s.erase((size_t)i, (size_t)(cur - i));
-    cur = i;
+  if (field_delete_sel(s, cur, anchor))
     return true;
+  if (cur <= 0)
+    return false;
+  int i = cur;
+  while (i > 0 && isspace((unsigned char)s[i - 1]))
+    i--;
+  while (i > 0 && !isspace((unsigned char)s[i - 1]))
+    i--;
+  s.erase((size_t)i, (size_t)(cur - i));
+  cur = i;
+  return true;
 }
 
 /* Insert raw bytes at the cursor, deleting any active selection first.
    Caller is responsible for ensuring the bytes form valid UTF-8 starting at
    the cursor (true for both typed input and clipboard text). */
-static void field_insert(std::string &s, int &cur, int &anchor, const char *data, int n) {
-    field_delete_sel(s, cur, anchor);
-    s.insert((size_t)cur, data, (size_t)n);
-    cur += n;
+static void field_insert(std::string &s, int &cur, int &anchor,
+                         const char *data, int n) {
+  field_delete_sel(s, cur, anchor);
+  s.insert((size_t)cur, data, (size_t)n);
+  cur += n;
 }
 
 static void navigate_match(App *a, mdv_window *w, bool backward) {
-    refresh_search_matches(a, w);
-    if (a->search_matches.empty()) return;
-    int n = (int)a->search_matches.size();
-    if (a->current_match < 0) a->current_match = backward ? n - 1 : 0;
-    else if (backward)        a->current_match = (a->current_match - 1 + n) % n;
-    else                      a->current_match = (a->current_match + 1) % n;
-    ensure_match_visible(a);
-    mdv_window_request_redraw(w);
+  refresh_search_matches(a, w);
+  if (a->search_matches.empty())
+    return;
+  int n = (int)a->search_matches.size();
+  if (a->current_match < 0)
+    a->current_match = backward ? n - 1 : 0;
+  else if (backward)
+    a->current_match = (a->current_match - 1 + n) % n;
+  else
+    a->current_match = (a->current_match + 1) % n;
+  ensure_match_visible(a);
+  mdv_window_request_redraw(w);
 }
 
-static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr, void *ud) {
-    App *a = (App*)ud;
+static void on_key(mdv_window *w, uint32_t ks, uint32_t mods, bool pr,
+                   void *ud) {
+  App *a = (App *)ud;
 
-    /* ---- Search-mode key handling (only on key press) ---- */
-    if (a->search_active && pr) {
-        bool shift = (mods & MDV_MOD_SHIFT) != 0;
-        std::string &q     = a->search_query;
-        int        &cur    = a->search_cursor;
-        int        &anchor = a->search_anchor;
+  /* ---- Search-mode key handling (only on key press) ---- */
+  if (a->search_active && pr) {
+    bool shift = (mods & MDV_MOD_SHIFT) != 0;
+    std::string &q = a->search_query;
+    int &cur = a->search_cursor;
+    int &anchor = a->search_anchor;
 
-        /* `redirty` repaints + invalidates match count after a query mutation. */
-        auto redirty = [&]() {
-            a->match_count_dirty = true;
-            if (q.empty()) { a->search_matches.clear(); a->current_match = -1; }
-            mdv_window_request_redraw(w);
-        };
-        auto sel_text = [&]() -> std::string {
-            int lo, hi; field_sel_range(anchor, cur, &lo, &hi);
-            return q.substr((size_t)lo, (size_t)(hi - lo));
-        };
+    /* `redirty` repaints + invalidates match count after a query mutation. */
+    auto redirty = [&]() {
+      a->match_count_dirty = true;
+      if (q.empty()) {
+        a->search_matches.clear();
+        a->current_match = -1;
+      }
+      mdv_window_request_redraw(w);
+    };
+    auto sel_text = [&]() -> std::string {
+      int lo, hi;
+      field_sel_range(anchor, cur, &lo, &hi);
+      return q.substr((size_t)lo, (size_t)(hi - lo));
+    };
 
-        if (ks == XKB_KEY_Escape) { close_search(a, w); return; }
-        if (ks == XKB_KEY_Return || ks == XKB_KEY_KP_Enter) {
-            navigate_match(a, w, shift); return;
-        }
-        if (ks == XKB_KEY_BackSpace) {
-            bool changed = (mods & MDV_MOD_CTRL)
-                ? field_delete_word_back(q, cur, anchor)
-                : field_backspace        (q, cur, anchor);
-            if (changed) redirty();
-            return;
-        }
-        if (ks == XKB_KEY_Delete) {
-            if (field_delete(q, cur, anchor)) redirty();
-            return;
-        }
-        if (ks == XKB_KEY_Left) {
-            field_move_to(cur, anchor, utf8_prev_boundary(q, cur), shift);
-            mdv_window_request_redraw(w); return;
-        }
-        if (ks == XKB_KEY_Right) {
-            field_move_to(cur, anchor, utf8_next_boundary(q, cur), shift);
-            mdv_window_request_redraw(w); return;
-        }
-        if (ks == XKB_KEY_Home) { field_move_to(cur, anchor, 0,              shift); mdv_window_request_redraw(w); return; }
-        if (ks == XKB_KEY_End)  { field_move_to(cur, anchor, (int)q.size(),  shift); mdv_window_request_redraw(w); return; }
-        if (mods & MDV_MOD_ALT) {
-            if      (ks == XKB_KEY_c) { a->case_sensitive = !a->case_sensitive; a->match_count_dirty = true; mdv_window_request_redraw(w); }
-            else if (ks == XKB_KEY_w) { a->whole_word     = !a->whole_word;     a->match_count_dirty = true; mdv_window_request_redraw(w); }
-            else if (ks == XKB_KEY_r) { a->regex_mode     = !a->regex_mode;     a->match_count_dirty = true; mdv_window_request_redraw(w); }
-            /* Eat all other Alt combos so they don't get typed as text. */
-            return;
-        }
-        if (mods & MDV_MOD_CTRL) {
-            if (ks == XKB_KEY_f) { close_search(a, w); return; }
-            if (ks == XKB_KEY_a) {
-                anchor = 0; cur = (int)q.size();
-                if (anchor == cur) anchor = -1;
-                mdv_window_request_redraw(w); return;
-            }
-            if (ks == XKB_KEY_c) {
-                std::string t = (anchor >= 0) ? sel_text() : q;
-                if (!t.empty()) mdv_window_copy_to_clipboard(w, t.c_str());
-                return;
-            }
-            if (ks == XKB_KEY_x) {
-                std::string t = (anchor >= 0) ? sel_text() : q;
-                if (t.empty()) return;
-                mdv_window_copy_to_clipboard(w, t.c_str());
-                if (anchor >= 0) field_delete_sel(q, cur, anchor);
-                else             { q.clear(); cur = 0; }
-                redirty(); return;
-            }
-            if (ks == XKB_KEY_w) {
-                /* Readline-style word-delete back from cursor. Same as
-                   Ctrl+Backspace; kept distinct because many shells bind
-                   Ctrl+W and the muscle memory is strong. */
-                if (field_delete_word_back(q, cur, anchor)) redirty();
-                return;
-            }
-            if (ks == XKB_KEY_v) {
-                char *txt = mdv_window_paste_blocking(w);
-                if (!txt) return;
-                /* Strip CR/LF: a multi-line paste into a find field never
-                   makes sense; treat embedded newlines as no-ops rather than
-                   silently corrupt the query. */
-                std::string clean;
-                clean.reserve(strlen(txt));
-                for (const char *p = txt; *p; p++) if (*p != '\r' && *p != '\n') clean += *p;
-                free(txt);
-                if (!clean.empty()) {
-                    field_insert(q, cur, anchor, clean.data(), (int)clean.size());
-                    redirty();
-                }
-                return;
-            }
-            /* Any other Ctrl combo: eat so it doesn't get typed as text. */
-            return;
-        }
-        /* Try printable text */
-        char buf[8];
-        int n = xkb_keysym_to_utf8(ks, buf, sizeof(buf));
-        if (n > 1) {
-            unsigned char c0 = (unsigned char)buf[0];
-            if (c0 >= 32 && c0 != 127) {
-                field_insert(q, cur, anchor, buf, n - 1);
-                redirty();
-            }
-        }
-        /* Eat anything else (arrows, page nav, etc) while typing */
-        return;
+    if (ks == XKB_KEY_Escape) {
+      close_search(a, w);
+      return;
     }
-
-    /* ---- Help-overlay key handling ----
-       Intercept before document keys: while help is up, scroll keys move
-       the help panel, F1/? toggles it back off, Esc closes. Anything else
-       is eaten so it doesn't accidentally drive the document underneath. */
-    if (a->help_visible && pr) {
-        if (ks == XKB_KEY_F1 || ks == XKB_KEY_question || ks == XKB_KEY_Escape) {
-            a->help_visible = false;
-            mdv_window_request_redraw(w);
-            return;
-        }
-        if (ks == XKB_KEY_q) { mdv_window_quit(w); return; }
-        double delta = 0;
-        switch (ks) {
-        case XKB_KEY_j: case XKB_KEY_Down:       delta =  36;  break;
-        case XKB_KEY_k: case XKB_KEY_Up:         delta = -36;  break;
-        case XKB_KEY_Page_Down:                  delta =  200; break;
-        case XKB_KEY_Page_Up:                    delta = -200; break;
-        case XKB_KEY_space:
-            delta = (mods & MDV_MOD_SHIFT) ? -200 : 200; break;
-        case XKB_KEY_Home: case XKB_KEY_g: a->help_scroll_y = 0;   mdv_window_request_redraw(w); return;
-        case XKB_KEY_End:  case XKB_KEY_G: a->help_scroll_y = 1e9; mdv_window_request_redraw(w); return;
-        }
-        if (delta != 0) {
-            a->help_scroll_y += delta;
-            mdv_window_request_redraw(w);
-        }
-        /* Eat anything else so e.g. Ctrl+T doesn't fire while reading help. */
-        return;
+    if (ks == XKB_KEY_Return || ks == XKB_KEY_KP_Enter) {
+      navigate_match(a, w, shift);
+      return;
     }
-
-    /* ---- Normal key handling ---- */
-
-    if (!pr) {
-        switch (ks) {
-        case XKB_KEY_j: case XKB_KEY_Down: case XKB_KEY_k: case XKB_KEY_Up:
-        case XKB_KEY_Page_Down: case XKB_KEY_Page_Up:
-            stop_ks(a, w); break;
-        case XKB_KEY_space:
-            stop_ks(a, w); break;  /* stop_ks already clears space_held */
-        case XKB_KEY_Shift_L: case XKB_KEY_Shift_R:
-            if (a->space_held && a->key_scrolling)
-                a->scroll_vel = PAGE_SPD;
-            break;
-        }
-        return;
+    if (ks == XKB_KEY_BackSpace) {
+      bool changed = (mods & MDV_MOD_CTRL)
+                         ? field_delete_word_back(q, cur, anchor)
+                         : field_backspace(q, cur, anchor);
+      if (changed)
+        redirty();
+      return;
     }
-
-    if ((ks == XKB_KEY_Shift_L || ks == XKB_KEY_Shift_R) && a->space_held && a->key_scrolling) {
-        a->scroll_vel = -PAGE_SPD;
-        return;
+    if (ks == XKB_KEY_Delete) {
+      if (field_delete(q, cur, anchor))
+        redirty();
+      return;
     }
-
-    if ((mods & MDV_MOD_CTRL) && ks == XKB_KEY_f) {
-        if (a->search_active) close_search(a, w);
-        else                  open_search(a, w);
-        return;
+    if (ks == XKB_KEY_Left) {
+      field_move_to(cur, anchor, utf8_prev_boundary(q, cur), shift);
+      mdv_window_request_redraw(w);
+      return;
     }
-    if ((mods & MDV_MOD_CTRL) && ks == XKB_KEY_c) {
-        std::string t = a->con.get_selected_text();
-        if (!t.empty()) mdv_window_copy_to_clipboard(w, t.c_str()); return;
+    if (ks == XKB_KEY_Right) {
+      field_move_to(cur, anchor, utf8_next_boundary(q, cur), shift);
+      mdv_window_request_redraw(w);
+      return;
     }
-    if ((mods & MDV_MOD_CTRL) && ks == XKB_KEY_a) {
-        Selection &s = a->con.selection();
-        s.anchor_x = 0; s.anchor_y = 0;
-        s.extent_x = a->doc_w; s.extent_y = a->doc_h;
-        s.active = true; s.dragging = false; mdv_window_request_redraw(w); return;
+    if (ks == XKB_KEY_Home) {
+      field_move_to(cur, anchor, 0, shift);
+      mdv_window_request_redraw(w);
+      return;
+    }
+    if (ks == XKB_KEY_End) {
+      field_move_to(cur, anchor, (int)q.size(), shift);
+      mdv_window_request_redraw(w);
+      return;
+    }
+    if (mods & MDV_MOD_ALT) {
+      if (ks == XKB_KEY_c) {
+        a->case_sensitive = !a->case_sensitive;
+        a->match_count_dirty = true;
+        mdv_window_request_redraw(w);
+      } else if (ks == XKB_KEY_w) {
+        a->whole_word = !a->whole_word;
+        a->match_count_dirty = true;
+        mdv_window_request_redraw(w);
+      } else if (ks == XKB_KEY_r) {
+        a->regex_mode = !a->regex_mode;
+        a->match_count_dirty = true;
+        mdv_window_request_redraw(w);
+      }
+      /* Eat all other Alt combos so they don't get typed as text. */
+      return;
     }
     if (mods & MDV_MOD_CTRL) {
-        /* Ctrl+± / Ctrl+0 adjust the body font-size (reflow). Trackpad pinch
-           and Ctrl+wheel still drive the scale-based zoom. Ctrl+0 resets both. */
-        if (ks == XKB_KEY_equal || ks == XKB_KEY_plus) { change_font_size(a, w,  FONT_SIZE_STEP); return; }
-        if (ks == XKB_KEY_minus)                       { change_font_size(a, w, -FONT_SIZE_STEP); return; }
-        if (ks == XKB_KEY_0)                           { reset_view(a, w); return; }
-        if (ks == XKB_KEY_t)     { toggle_toc(a, w); return; }
-        if (ks == XKB_KEY_d)     { toggle_dark_mode(a, w); return; }
-    }
-    /* F3 / Shift+F3 jump to next/prev match if search has matches */
-    if (ks == XKB_KEY_F3 && !a->search_matches.empty()) {
-        navigate_match(a, w, mods & MDV_MOD_SHIFT);
+      if (ks == XKB_KEY_f) {
+        close_search(a, w);
         return;
-    }
-    /* Back/forward through followed-link history (browser-style). */
-    if (ks == XKB_KEY_Left  && (mods & MDV_MOD_ALT)) { history_go(a, -1); return; }
-    if (ks == XKB_KEY_Right && (mods & MDV_MOD_ALT)) { history_go(a, +1); return; }
-    if (ks == XKB_KEY_BackSpace) { history_go(a, (mods & MDV_MOD_SHIFT) ? +1 : -1); return; }
-    switch (ks) {
-    case XKB_KEY_j: case XKB_KEY_Down:  start_ks(a, w, KEY_SPD); return;
-    case XKB_KEY_k: case XKB_KEY_Up:    start_ks(a, w, -KEY_SPD); return;
-    case XKB_KEY_Page_Down:             start_ks(a, w, PAGE_SPD); return;
-    case XKB_KEY_Page_Up:               start_ks(a, w, -PAGE_SPD); return;
-    case XKB_KEY_space:
-        a->space_held = true;
-        start_ks(a, w, (mods & MDV_MOD_SHIFT) ? -PAGE_SPD : PAGE_SPD); return;
-    case XKB_KEY_Home: case XKB_KEY_g:  a->scroll_y = 0; mdv_window_request_redraw(w); return;
-    case XKB_KEY_End:  case XKB_KEY_G:  a->scroll_y = max_sy(a); mdv_window_request_redraw(w); return;
-    case XKB_KEY_F1: case XKB_KEY_question:
-        a->help_visible = !a->help_visible;
-        if (a->help_visible) a->help_scroll_y = 0;
+      }
+      if (ks == XKB_KEY_a) {
+        anchor = 0;
+        cur = (int)q.size();
+        if (anchor == cur)
+          anchor = -1;
         mdv_window_request_redraw(w);
         return;
-    case XKB_KEY_Escape:
-        if (a->menu.visible) { menu_close(a); mdv_window_request_redraw(w); return; }
-        if (a->help_visible) { a->help_visible = false; mdv_window_request_redraw(w); return; }
-        /* Otherwise eat it. Esc only dismisses overlays, never the window. */
+      }
+      if (ks == XKB_KEY_c) {
+        std::string t = (anchor >= 0) ? sel_text() : q;
+        if (!t.empty())
+          mdv_window_copy_to_clipboard(w, t.c_str());
         return;
-    case XKB_KEY_q:                      mdv_window_quit(w); return;
+      }
+      if (ks == XKB_KEY_x) {
+        std::string t = (anchor >= 0) ? sel_text() : q;
+        if (t.empty())
+          return;
+        mdv_window_copy_to_clipboard(w, t.c_str());
+        if (anchor >= 0)
+          field_delete_sel(q, cur, anchor);
+        else {
+          q.clear();
+          cur = 0;
+        }
+        redirty();
+        return;
+      }
+      if (ks == XKB_KEY_w) {
+        /* Readline-style word-delete back from cursor. Same as
+           Ctrl+Backspace; kept distinct because many shells bind
+           Ctrl+W and the muscle memory is strong. */
+        if (field_delete_word_back(q, cur, anchor))
+          redirty();
+        return;
+      }
+      if (ks == XKB_KEY_v) {
+        char *txt = mdv_window_paste_blocking(w);
+        if (!txt)
+          return;
+        /* Strip CR/LF: a multi-line paste into a find field never
+           makes sense; treat embedded newlines as no-ops rather than
+           silently corrupt the query. */
+        std::string clean;
+        clean.reserve(strlen(txt));
+        for (const char *p = txt; *p; p++)
+          if (*p != '\r' && *p != '\n')
+            clean += *p;
+        free(txt);
+        if (!clean.empty()) {
+          field_insert(q, cur, anchor, clean.data(), (int)clean.size());
+          redirty();
+        }
+        return;
+      }
+      /* Any other Ctrl combo: eat so it doesn't get typed as text. */
+      return;
     }
+    /* Try printable text */
+    char buf[8];
+    int n = xkb_keysym_to_utf8(ks, buf, sizeof(buf));
+    if (n > 1) {
+      unsigned char c0 = (unsigned char)buf[0];
+      if (c0 >= 32 && c0 != 127) {
+        field_insert(q, cur, anchor, buf, n - 1);
+        redirty();
+      }
+    }
+    /* Eat anything else (arrows, page nav, etc) while typing */
+    return;
+  }
+
+  /* ---- Help-overlay key handling ----
+     Intercept before document keys: while help is up, scroll keys move
+     the help panel, F1/? toggles it back off, Esc closes. Anything else
+     is eaten so it doesn't accidentally drive the document underneath. */
+  if (a->help_visible && pr) {
+    if (ks == XKB_KEY_F1 || ks == XKB_KEY_question || ks == XKB_KEY_Escape) {
+      a->help_visible = false;
+      mdv_window_request_redraw(w);
+      return;
+    }
+    if (ks == XKB_KEY_q) {
+      mdv_window_quit(w);
+      return;
+    }
+    double delta = 0;
+    switch (ks) {
+    case XKB_KEY_j:
+    case XKB_KEY_Down:
+      delta = 36;
+      break;
+    case XKB_KEY_k:
+    case XKB_KEY_Up:
+      delta = -36;
+      break;
+    case XKB_KEY_Page_Down:
+      delta = 200;
+      break;
+    case XKB_KEY_Page_Up:
+      delta = -200;
+      break;
+    case XKB_KEY_space:
+      delta = (mods & MDV_MOD_SHIFT) ? -200 : 200;
+      break;
+    case XKB_KEY_Home:
+    case XKB_KEY_g:
+      a->help_scroll_y = 0;
+      mdv_window_request_redraw(w);
+      return;
+    case XKB_KEY_End:
+    case XKB_KEY_G:
+      a->help_scroll_y = 1e9;
+      mdv_window_request_redraw(w);
+      return;
+    }
+    if (delta != 0) {
+      a->help_scroll_y += delta;
+      mdv_window_request_redraw(w);
+    }
+    /* Eat anything else so e.g. Ctrl+T doesn't fire while reading help. */
+    return;
+  }
+
+  /* ---- Normal key handling ---- */
+
+  if (!pr) {
+    switch (ks) {
+    case XKB_KEY_j:
+    case XKB_KEY_Down:
+    case XKB_KEY_k:
+    case XKB_KEY_Up:
+    case XKB_KEY_Page_Down:
+    case XKB_KEY_Page_Up:
+      stop_ks(a, w);
+      break;
+    case XKB_KEY_space:
+      stop_ks(a, w);
+      break; /* stop_ks already clears space_held */
+    case XKB_KEY_Shift_L:
+    case XKB_KEY_Shift_R:
+      if (a->space_held && a->key_scrolling)
+        a->scroll_vel = PAGE_SPD;
+      break;
+    }
+    return;
+  }
+
+  if ((ks == XKB_KEY_Shift_L || ks == XKB_KEY_Shift_R) && a->space_held &&
+      a->key_scrolling) {
+    a->scroll_vel = -PAGE_SPD;
+    return;
+  }
+
+  if ((mods & MDV_MOD_CTRL) && ks == XKB_KEY_f) {
+    if (a->search_active)
+      close_search(a, w);
+    else
+      open_search(a, w);
+    return;
+  }
+  if ((mods & MDV_MOD_CTRL) && ks == XKB_KEY_c) {
+    std::string t = a->con.get_selected_text();
+    if (!t.empty())
+      mdv_window_copy_to_clipboard(w, t.c_str());
+    return;
+  }
+  if ((mods & MDV_MOD_CTRL) && ks == XKB_KEY_a) {
+    Selection &s = a->con.selection();
+    s.anchor_x = 0;
+    s.anchor_y = 0;
+    s.extent_x = a->doc_w;
+    s.extent_y = a->doc_h;
+    s.active = true;
+    s.dragging = false;
+    mdv_window_request_redraw(w);
+    return;
+  }
+  if (mods & MDV_MOD_CTRL) {
+    /* Ctrl+± / Ctrl+0 adjust the body font-size (reflow). Trackpad pinch
+       and Ctrl+wheel still drive the scale-based zoom. Ctrl+0 resets both. */
+    if (ks == XKB_KEY_equal || ks == XKB_KEY_plus) {
+      change_font_size(a, w, FONT_SIZE_STEP);
+      return;
+    }
+    if (ks == XKB_KEY_minus) {
+      change_font_size(a, w, -FONT_SIZE_STEP);
+      return;
+    }
+    if (ks == XKB_KEY_0) {
+      reset_view(a, w);
+      return;
+    }
+    if (ks == XKB_KEY_t) {
+      toggle_toc(a, w);
+      return;
+    }
+    if (ks == XKB_KEY_d) {
+      toggle_dark_mode(a, w);
+      return;
+    }
+  }
+  /* F3 / Shift+F3 jump to next/prev match if search has matches */
+  if (ks == XKB_KEY_F3 && !a->search_matches.empty()) {
+    navigate_match(a, w, mods & MDV_MOD_SHIFT);
+    return;
+  }
+  /* Back/forward through followed-link history (browser-style). */
+  if (ks == XKB_KEY_Left && (mods & MDV_MOD_ALT)) {
+    history_go(a, -1);
+    return;
+  }
+  if (ks == XKB_KEY_Right && (mods & MDV_MOD_ALT)) {
+    history_go(a, +1);
+    return;
+  }
+  if (ks == XKB_KEY_BackSpace) {
+    history_go(a, (mods & MDV_MOD_SHIFT) ? +1 : -1);
+    return;
+  }
+  switch (ks) {
+  case XKB_KEY_j:
+  case XKB_KEY_Down:
+    start_ks(a, w, KEY_SPD);
+    return;
+  case XKB_KEY_k:
+  case XKB_KEY_Up:
+    start_ks(a, w, -KEY_SPD);
+    return;
+  case XKB_KEY_Page_Down:
+    start_ks(a, w, PAGE_SPD);
+    return;
+  case XKB_KEY_Page_Up:
+    start_ks(a, w, -PAGE_SPD);
+    return;
+  case XKB_KEY_space:
+    a->space_held = true;
+    start_ks(a, w, (mods & MDV_MOD_SHIFT) ? -PAGE_SPD : PAGE_SPD);
+    return;
+  case XKB_KEY_Home:
+  case XKB_KEY_g:
+    a->scroll_y = 0;
+    mdv_window_request_redraw(w);
+    return;
+  case XKB_KEY_End:
+  case XKB_KEY_G:
+    a->scroll_y = max_sy(a);
+    mdv_window_request_redraw(w);
+    return;
+  case XKB_KEY_F1:
+  case XKB_KEY_question:
+    a->help_visible = !a->help_visible;
+    if (a->help_visible)
+      a->help_scroll_y = 0;
+    mdv_window_request_redraw(w);
+    return;
+  case XKB_KEY_Escape:
+    if (a->menu.visible) {
+      menu_close(a);
+      mdv_window_request_redraw(w);
+      return;
+    }
+    if (a->help_visible) {
+      a->help_visible = false;
+      mdv_window_request_redraw(w);
+      return;
+    }
+    /* Otherwise eat it. Esc only dismisses overlays, never the window. */
+    return;
+  case XKB_KEY_q:
+    mdv_window_quit(w);
+    return;
+  }
 }
 
-static void on_close(mdv_window *w, void *ud) { (void)ud; mdv_window_quit(w); }
+static void on_close(mdv_window *w, void *ud) {
+  (void)ud;
+  mdv_window_quit(w);
+}
 
 /* Re-create the litehtml document with whatever the highlighter has
    produced so far, preserving scroll position. Called from the highlight
    milestone callback after the first batch finishes and again when all
    blocks have completed. */
 static void rebuild_doc_with_highlight(App *a, mdv_window *w) {
-    std::string new_html = a->highlighter.build_html(a->original_html);
-    if (new_html == a->html) return;  /* nothing to do */
-    a->html = std::move(new_html);
+  std::string new_html = a->highlighter.build_html(a->original_html);
+  if (new_html == a->html)
+    return; /* nothing to do */
+  a->html = std::move(new_html);
 
-    double sx = a->scroll_x, sy = a->scroll_y;
-    a->doc = litehtml::document::createFromString(a->html.c_str(), &a->con, litehtml::master_css);
-    do_layout(a);
-    a->scroll_x = sx; a->scroll_y = sy;
-    clamp(a);
-    a->match_count_dirty = true;
-    mdv_window_request_redraw(w);
+  double sx = a->scroll_x, sy = a->scroll_y;
+  a->doc = litehtml::document::createFromString(a->html.c_str(), &a->con,
+                                                litehtml::master_css);
+  do_layout(a);
+  a->scroll_x = sx;
+  a->scroll_y = sy;
+  clamp(a);
+  a->match_count_dirty = true;
+  mdv_window_request_redraw(w);
 }
 
 static void on_highlight_milestone(mdv_window *w, void *ud) {
-    rebuild_doc_with_highlight((App*)ud, w);
+  rebuild_doc_with_highlight((App *)ud, w);
 }
 
 static void start_highlight(App *a, mdv_window *w) {
-    if (!a->highlighter.active()) return;
-    auto blocks = mdv::extract_code_blocks(a->original_html);
-    if (blocks.empty()) return;
-    a->highlighter.start(w, std::move(blocks), on_highlight_milestone, a);
+  if (!a->highlighter.active())
+    return;
+  auto blocks = mdv::extract_code_blocks(a->original_html);
+  if (blocks.empty())
+    return;
+  a->highlighter.start(w, std::move(blocks), on_highlight_milestone, a);
 }
 
 /* Re-render the document from cached source markdown using whichever theme
@@ -2313,32 +2808,35 @@ static void start_highlight(App *a, mdv_window *w) {
    that themselves (some need to keep it as-is, others need to translate it
    through the new layout fraction-of-doc-style). */
 static void rerender_doc(App *a) {
-    a->highlighter.stop();
-    a->con.set_dark_mode(a->dark_mode);
-    a->html          = add_heading_ids(md2html(a->source_md, a->dark_mode, a->font_size));
-    a->original_html = a->html;
-    a->toc_entries   = extract_toc(a->original_html);
-    clamp_toc_scroll(a);
-    a->doc = litehtml::document::createFromString(a->html.c_str(), &a->con, litehtml::master_css);
-    do_layout(a);
-    a->match_count_dirty = true;
-    /* The readout named an element of the document we just replaced. Callers
-       that know where the pointer ends up (navigation) re-resolve it after
-       the scroll settles; for the rest, dropping it is the honest answer. */
-    a->hover_href.clear();
+  a->highlighter.stop();
+  a->con.set_dark_mode(a->dark_mode);
+  a->html = add_heading_ids(md2html(a->source_md, a->dark_mode, a->font_size));
+  a->original_html = a->html;
+  a->toc_entries = extract_toc(a->original_html);
+  clamp_toc_scroll(a);
+  a->doc = litehtml::document::createFromString(a->html.c_str(), &a->con,
+                                                litehtml::master_css);
+  do_layout(a);
+  a->match_count_dirty = true;
+  /* The readout named an element of the document we just replaced. Callers
+     that know where the pointer ends up (navigation) re-resolve it after
+     the scroll settles; for the rest, dropping it is the honest answer. */
+  a->hover_href.clear();
 }
 
 static void toggle_dark_mode(App *a, mdv_window *w) {
-    a->dark_mode = !a->dark_mode;
-    /* Theme change doesn't reflow, so the literal scroll position stays
-       valid; just save/restore around the rebuild. */
-    double sx = a->scroll_x, sy = a->scroll_y;
-    rerender_doc(a);
-    a->scroll_x = sx; a->scroll_y = sy;
-    clamp(a);
-    a->highlighter.set_dark(a->dark_mode);
-    if (a->highlighter.tool() != mdv::HLTool::None) start_highlight(a, w);
-    mdv_window_request_redraw(w);
+  a->dark_mode = !a->dark_mode;
+  /* Theme change doesn't reflow, so the literal scroll position stays
+     valid; just save/restore around the rebuild. */
+  double sx = a->scroll_x, sy = a->scroll_y;
+  rerender_doc(a);
+  a->scroll_x = sx;
+  a->scroll_y = sy;
+  clamp(a);
+  a->highlighter.set_dark(a->dark_mode);
+  if (a->highlighter.tool() != mdv::HLTool::None)
+    start_highlight(a, w);
+  mdv_window_request_redraw(w);
 }
 
 /* Adjust the body font-size (and proportionally all related sizes) by
@@ -2346,120 +2844,147 @@ static void toggle_dark_mode(App *a, mdv_window *w) {
    total doc height/width so the user stays at roughly the same place in
    the document despite the layout reflowing. */
 static void change_font_size(App *a, mdv_window *w, int delta) {
-    int new_size = a->font_size + delta;
-    if (new_size < FONT_SIZE_MIN) new_size = FONT_SIZE_MIN;
-    if (new_size > FONT_SIZE_MAX) new_size = FONT_SIZE_MAX;
-    if (new_size == a->font_size) return;
+  int new_size = a->font_size + delta;
+  if (new_size < FONT_SIZE_MIN)
+    new_size = FONT_SIZE_MIN;
+  if (new_size > FONT_SIZE_MAX)
+    new_size = FONT_SIZE_MAX;
+  if (new_size == a->font_size)
+    return;
 
-    double full_h = a->doc_h * a->zoom;
-    double full_w = a->doc_w * a->zoom;
-    double frac_y = (full_h > 0) ? (a->scroll_y / full_h) : 0.0;
-    double frac_x = (full_w > 0) ? (a->scroll_x / full_w) : 0.0;
+  double full_h = a->doc_h * a->zoom;
+  double full_w = a->doc_w * a->zoom;
+  double frac_y = (full_h > 0) ? (a->scroll_y / full_h) : 0.0;
+  double frac_x = (full_w > 0) ? (a->scroll_x / full_w) : 0.0;
 
-    a->font_size = new_size;
-    rerender_doc(a);
+  a->font_size = new_size;
+  rerender_doc(a);
 
-    a->scroll_x = frac_x * (a->doc_w * a->zoom);
-    a->scroll_y = frac_y * (a->doc_h * a->zoom);
-    clamp(a);
-    if (a->highlighter.tool() != mdv::HLTool::None) start_highlight(a, w);
-    mdv_window_request_redraw(w);
+  a->scroll_x = frac_x * (a->doc_w * a->zoom);
+  a->scroll_y = frac_y * (a->doc_h * a->zoom);
+  clamp(a);
+  if (a->highlighter.tool() != mdv::HLTool::None)
+    start_highlight(a, w);
+  mdv_window_request_redraw(w);
 }
 
 /* Ctrl+0 reset: text size AND pinch zoom both back to defaults. */
 static void reset_view(App *a, mdv_window *w) {
-    a->zoom = 1.0;
-    if (a->font_size != FONT_SIZE_DEFAULT) {
-        change_font_size(a, w, FONT_SIZE_DEFAULT - a->font_size);
-    } else {
-        clamp(a);
-        mdv_window_request_redraw(w);
-    }
+  a->zoom = 1.0;
+  if (a->font_size != FONT_SIZE_DEFAULT) {
+    change_font_size(a, w, FONT_SIZE_DEFAULT - a->font_size);
+  } else {
+    clamp(a);
+    mdv_window_request_redraw(w);
+  }
 }
 
 static void toggle_toc(App *a, mdv_window *w) {
-    a->toc_visible = !a->toc_visible;
-    /* Recompute vp_w based on the current window dimensions. */
-    a->vp_w = mdv_window_width(w) - toc_w(a);
-    if (a->vp_w < 0) a->vp_w = 0;
-    if (a->toc_visible) a->toc_entries = extract_toc(a->original_html);
-    do_layout(a);
-    mdv_window_request_redraw(w);
+  a->toc_visible = !a->toc_visible;
+  /* Recompute vp_w based on the current window dimensions. */
+  a->vp_w = mdv_window_width(w) - toc_w(a);
+  if (a->vp_w < 0)
+    a->vp_w = 0;
+  if (a->toc_visible)
+    a->toc_entries = extract_toc(a->original_html);
+  do_layout(a);
+  mdv_window_request_redraw(w);
 }
 
-static double perf_ms_between(const struct timespec &a, const struct timespec &b) {
-    return (b.tv_sec - a.tv_sec) * 1000.0 + (b.tv_nsec - a.tv_nsec) / 1e6;
+static double perf_ms_between(const struct timespec &a,
+                              const struct timespec &b) {
+  return (b.tv_sec - a.tv_sec) * 1000.0 + (b.tv_nsec - a.tv_nsec) / 1e6;
 }
 
 /* Read /proc/self/status, return VmRSS in kB or -1 if unavailable. */
 static long perf_read_vm_rss_kb() {
-    FILE *f = fopen("/proc/self/status", "r");
-    if (!f) return -1;
-    long kb = -1;
-    char line[256];
-    while (fgets(line, sizeof(line), f)) {
-        if (strncmp(line, "VmRSS:", 6) == 0) { sscanf(line + 6, "%ld", &kb); break; }
+  FILE *f = fopen("/proc/self/status", "r");
+  if (!f)
+    return -1;
+  long kb = -1;
+  char line[256];
+  while (fgets(line, sizeof(line), f)) {
+    if (strncmp(line, "VmRSS:", 6) == 0) {
+      sscanf(line + 6, "%ld", &kb);
+      break;
     }
-    fclose(f);
-    return kb;
+  }
+  fclose(f);
+  return kb;
 }
 
 static void on_first_frame(mdv_window *w, void *ud) {
-    App *a = (App*)ud;
+  App *a = (App *)ud;
 
-    /* Perf report when MDVIEW_DEBUG=1. Use `-f` so stderr stays attached
-       to the launching terminal:
-           MDVIEW_DEBUG=1 mdview -f doc.md */
-    if (getenv("MDVIEW_DEBUG")) {
-        struct timespec t_paint;
-        clock_gettime(CLOCK_MONOTONIC, &t_paint);
-        long rss_kb = perf_read_vm_rss_kb();
-        fprintf(stderr, "mdview perf (cold start → first paint):\n");
-        fprintf(stderr, "  file read           : %7.2f ms\n", perf_ms_between(a->perf.t_start,        a->perf.t_after_read));
-        fprintf(stderr, "  state + config load : %7.2f ms\n", perf_ms_between(a->perf.t_after_read,   a->perf.t_after_state));
-        fprintf(stderr, "  md4c + heading ids  : %7.2f ms\n", perf_ms_between(a->perf.t_after_state,  a->perf.t_after_md));
-        fprintf(stderr, "  litehtml doc build  : %7.2f ms\n", perf_ms_between(a->perf.t_after_md,     a->perf.t_after_doc));
-        fprintf(stderr, "  window create       : %7.2f ms\n", perf_ms_between(a->perf.t_after_doc,    a->perf.t_after_create));
-        fprintf(stderr, "  wait for first paint: %7.2f ms\n", perf_ms_between(a->perf.t_after_create, t_paint));
-        fprintf(stderr, "  TOTAL               : %7.2f ms\n", perf_ms_between(a->perf.t_start,        t_paint));
-        if (rss_kb >= 0)
-            fprintf(stderr, "  RSS at first paint  : %.1f MB (%ld kB)\n", rss_kb / 1024.0, rss_kb);
-        fprintf(stderr, "  source size         : %zu bytes\n", a->source_md.size());
-        fprintf(stderr, "  text spans drawn    : %zu\n",       a->con.spans().size());
-        fprintf(stderr, "  pre/code blocks     : %zu\n",       a->code_blocks.size());
-        fprintf(stderr, "  viewport            : %dx%d px (zoom %.2fx, font %dpx)\n",
-                mdv_window_width(w), mdv_window_height(w), a->zoom, a->font_size);
-    }
+  /* Perf report when MDVIEW_DEBUG=1. Use `-f` so stderr stays attached
+     to the launching terminal:
+         MDVIEW_DEBUG=1 mdview -f doc.md */
+  if (getenv("MDVIEW_DEBUG")) {
+    struct timespec t_paint;
+    clock_gettime(CLOCK_MONOTONIC, &t_paint);
+    long rss_kb = perf_read_vm_rss_kb();
+    fprintf(stderr, "mdview perf (cold start → first paint):\n");
+    fprintf(stderr, "  file read           : %7.2f ms\n",
+            perf_ms_between(a->perf.t_start, a->perf.t_after_read));
+    fprintf(stderr, "  state + config load : %7.2f ms\n",
+            perf_ms_between(a->perf.t_after_read, a->perf.t_after_state));
+    fprintf(stderr, "  md4c + heading ids  : %7.2f ms\n",
+            perf_ms_between(a->perf.t_after_state, a->perf.t_after_md));
+    fprintf(stderr, "  litehtml doc build  : %7.2f ms\n",
+            perf_ms_between(a->perf.t_after_md, a->perf.t_after_doc));
+    fprintf(stderr, "  window create       : %7.2f ms\n",
+            perf_ms_between(a->perf.t_after_doc, a->perf.t_after_create));
+    fprintf(stderr, "  wait for first paint: %7.2f ms\n",
+            perf_ms_between(a->perf.t_after_create, t_paint));
+    fprintf(stderr, "  TOTAL               : %7.2f ms\n",
+            perf_ms_between(a->perf.t_start, t_paint));
+    if (rss_kb >= 0)
+      fprintf(stderr, "  RSS at first paint  : %.1f MB (%ld kB)\n",
+              rss_kb / 1024.0, rss_kb);
+    fprintf(stderr, "  source size         : %zu bytes\n", a->source_md.size());
+    fprintf(stderr, "  text spans drawn    : %zu\n", a->con.spans().size());
+    fprintf(stderr, "  pre/code blocks     : %zu\n", a->code_blocks.size());
+    fprintf(stderr,
+            "  viewport            : %dx%d px (zoom %.2fx, font %dpx)\n",
+            mdv_window_width(w), mdv_window_height(w), a->zoom, a->font_size);
+  }
 
-    /* Deferred from main(): both are cheap but reading $PATH and registering
-       an inotify watch shouldn't sit on the first-paint critical path. */
-    a->highlighter.set_tool(mdv::detect_tool(a->arg_no_highlight));
-    if (!a->arg_no_reload) a->live_reloader.start(w, a->file_path, reload_file, a);
-    start_highlight(a, w);
+  /* Deferred from main(): both are cheap but reading $PATH and registering
+     an inotify watch shouldn't sit on the first-paint critical path. */
+  a->highlighter.set_tool(mdv::detect_tool(a->arg_no_highlight));
+  if (!a->arg_no_reload)
+    a->live_reloader.start(w, a->file_path, reload_file, a);
+  start_highlight(a, w);
 }
 
 /* Re-read the source file from disk and rebuild everything. Called by
    LiveReloader when the file changes on disk. Preserves scroll, search
    state, selection. */
 static void reload_file(void *ud) {
-    App *a = (App*)ud;
-    std::ifstream f(a->file_path);
-    if (!f.is_open()) return;
-    std::ostringstream ss; ss << f.rdbuf(); f.close();
-    std::string new_md = ss.str();
-    if (new_md == a->source_md) return;  /* same content, no change */
-    a->source_md = std::move(new_md);
+  App *a = (App *)ud;
+  std::ifstream f(a->file_path);
+  if (!f.is_open())
+    return;
+  std::ostringstream ss;
+  ss << f.rdbuf();
+  f.close();
+  std::string new_md = ss.str();
+  if (new_md == a->source_md)
+    return; /* same content, no change */
+  a->source_md = std::move(new_md);
 
-    /* File content changed but font-size hasn't, so the doc dims are most
-       likely similar; keep the literal scroll position and let clamp pull
-       it in if the new content is shorter. */
-    double sx = a->scroll_x, sy = a->scroll_y;
-    rerender_doc(a);
-    a->scroll_x = sx; a->scroll_y = sy;
-    clamp(a);
-    if (a->highlighter.tool() != mdv::HLTool::None) start_highlight(a, a->win);
+  /* File content changed but font-size hasn't, so the doc dims are most
+     likely similar; keep the literal scroll position and let clamp pull
+     it in if the new content is shorter. */
+  double sx = a->scroll_x, sy = a->scroll_y;
+  rerender_doc(a);
+  a->scroll_x = sx;
+  a->scroll_y = sy;
+  clamp(a);
+  if (a->highlighter.tool() != mdv::HLTool::None)
+    start_highlight(a, a->win);
 
-    mdv_window_request_redraw(a->win);
+  mdv_window_request_redraw(a->win);
 }
 
 /* Swap the displayed document to abs_path: read it, re-point the live-reload
@@ -2467,30 +2992,35 @@ static void reload_file(void *ud) {
    history — callers own that. Returns false (leaving state untouched) if the
    file can't be read, so navigation can no-op instead of corrupting history. */
 static bool load_document(App *a, const std::string &abs_path) {
-    std::ifstream f(abs_path);
-    if (!f.is_open()) return false;
-    std::ostringstream ss; ss << f.rdbuf(); f.close();
-    a->source_md = ss.str();
+  std::ifstream f(abs_path);
+  if (!f.is_open())
+    return false;
+  std::ostringstream ss;
+  ss << f.rdbuf();
+  f.close();
+  a->source_md = ss.str();
 
-    a->file_path = abs_path;
-    size_t sl = abs_path.find_last_of('/');
-    a->file_basename = (sl == std::string::npos) ? abs_path : abs_path.substr(sl + 1);
-    a->con.set_base_dir(sl != std::string::npos ? abs_path.substr(0, sl) : ".");
+  a->file_path = abs_path;
+  size_t sl = abs_path.find_last_of('/');
+  a->file_basename =
+      (sl == std::string::npos) ? abs_path : abs_path.substr(sl + 1);
+  a->con.set_base_dir(sl != std::string::npos ? abs_path.substr(0, sl) : ".");
 
-    /* Re-point the inotify watch at the new file's directory. */
-    if (!a->arg_no_reload && a->win) {
-        a->live_reloader.stop();
-        a->live_reloader.start(a->win, a->file_path, reload_file, a);
-    }
+  /* Re-point the inotify watch at the new file's directory. */
+  if (!a->arg_no_reload && a->win) {
+    a->live_reloader.stop();
+    a->live_reloader.start(a->win, a->file_path, reload_file, a);
+  }
 
-    rerender_doc(a);
-    if (a->highlighter.tool() != mdv::HLTool::None) start_highlight(a, a->win);
+  rerender_doc(a);
+  if (a->highlighter.tool() != mdv::HLTool::None)
+    start_highlight(a, a->win);
 
-    if (a->win) {
-        std::string title = "mdview - " + a->file_basename;
-        mdv_window_set_title(a->win, title.c_str());
-    }
-    return true;
+  if (a->win) {
+    std::string title = "mdview - " + a->file_basename;
+    mdv_window_set_title(a->win, title.c_str());
+  }
+  return true;
 }
 
 /* Re-resolve the status-bar link readout at the pointer's current position.
@@ -2498,276 +3028,336 @@ static bool load_document(App *a, const std::string &abs_path) {
    so nothing else would refresh it, and the link that was under the pointer
    belonged to the document we just dropped. */
 static void refresh_hover_href(App *a) {
-    a->hover_href.clear();
-    if (!a->doc || !a->pointer_inside || a->menu.visible) return;
-    int x = a->mouse_x, y = a->mouse_y;
-    if (a->toc_visible && x < SIDEBAR_W && y < a->vp_h) return;
-    SBG sv = sbv(a), sh = sbh(a);
-    int x_eff = x - toc_w(a);
-    if ((sv.vis && x_eff >= a->vp_w - SB_W)
-     || (sh.vis && y >= a->vp_h - SB_W && y < a->vp_h)
-     || (a->search_active && y < SEARCH_BAR_H)
-     || y >= a->vp_h) return;
-    std::string h = href_at(a, (int)((x_eff + a->scroll_x) / a->zoom),
-                               (int)((y     + a->scroll_y) / a->zoom));
-    if (!h.empty()) a->hover_href = percent_decode(h);
+  a->hover_href.clear();
+  if (!a->doc || !a->pointer_inside || a->menu.visible)
+    return;
+  int x = a->mouse_x, y = a->mouse_y;
+  if (a->toc_visible && x < SIDEBAR_W && y < a->vp_h)
+    return;
+  SBG sv = sbv(a), sh = sbh(a);
+  int x_eff = x - toc_w(a);
+  if ((sv.vis && x_eff >= a->vp_w - SB_W) ||
+      (sh.vis && y >= a->vp_h - SB_W && y < a->vp_h) ||
+      (a->search_active && y < SEARCH_BAR_H) || y >= a->vp_h)
+    return;
+  std::string h = href_at(a, (int)((x_eff + a->scroll_x) / a->zoom),
+                          (int)((y + a->scroll_y) / a->zoom));
+  if (!h.empty())
+    a->hover_href = percent_decode(h);
 }
 
 /* Follow a local .md link in place: push onto history (clearing any forward
    entries) and jump to the top of the new document. */
 static void navigate_to(App *a, const std::string &abs_path) {
-    double cur_scroll = a->scroll_y;
-    if (!load_document(a, abs_path)) return;
+  double cur_scroll = a->scroll_y;
+  if (!load_document(a, abs_path))
+    return;
 
-    if (a->hist_idx >= 0 && a->hist_idx < (int)a->history.size())
-        a->history[a->hist_idx].scroll_y = cur_scroll;
-    a->history.resize(a->hist_idx + 1);          /* drop forward history */
-    a->history.push_back({abs_path, 0.0});
-    a->hist_idx = (int)a->history.size() - 1;
+  if (a->hist_idx >= 0 && a->hist_idx < (int)a->history.size())
+    a->history[a->hist_idx].scroll_y = cur_scroll;
+  a->history.resize(a->hist_idx + 1); /* drop forward history */
+  a->history.push_back({abs_path, 0.0});
+  a->hist_idx = (int)a->history.size() - 1;
 
-    a->scroll_x = 0; a->scroll_y = 0;
-    clamp(a);
-    refresh_hover_href(a);
-    if (a->win) mdv_window_request_redraw(a->win);
+  a->scroll_x = 0;
+  a->scroll_y = 0;
+  clamp(a);
+  refresh_hover_href(a);
+  if (a->win)
+    mdv_window_request_redraw(a->win);
 }
 
 /* Move dir steps along the history (-1 back, +1 forward), restoring that
    entry's saved scroll. No-op at either end or if the target file is gone. */
 static void history_go(App *a, int dir) {
-    int target = a->hist_idx + dir;
-    if (target < 0 || target >= (int)a->history.size()) return;
-    double cur_scroll = a->scroll_y;
-    if (!load_document(a, a->history[target].path)) return;
-    a->history[a->hist_idx].scroll_y = cur_scroll;
-    a->hist_idx = target;
-    a->scroll_x = 0;
-    a->scroll_y = a->history[target].scroll_y;
-    clamp(a);
-    refresh_hover_href(a);
-    if (a->win) mdv_window_request_redraw(a->win);
+  int target = a->hist_idx + dir;
+  if (target < 0 || target >= (int)a->history.size())
+    return;
+  double cur_scroll = a->scroll_y;
+  if (!load_document(a, a->history[target].path))
+    return;
+  a->history[a->hist_idx].scroll_y = cur_scroll;
+  a->hist_idx = target;
+  a->scroll_x = 0;
+  a->scroll_y = a->history[target].scroll_y;
+  clamp(a);
+  refresh_hover_href(a);
+  if (a->win)
+    mdv_window_request_redraw(a->win);
 }
 
 static void print_usage(const char *prog) {
-    fprintf(stderr,
-        "Usage: %s [options] <path-to-markdown-file>\n"
-        "\n"
-        "Options:\n"
-        "  --no-highlight   disable syntax highlighting of code blocks\n"
-        "  --no-reload      disable live-reload on file change\n"
-        "  -f, --foreground stay attached to the terminal (default: detach)\n"
-        "  --install        install mdview into ~/.local (binary + icons + .desktop)\n"
-        "  --uninstall      undo --install\n"
-        "  -h, --help       show this help\n"
-        "\n"
-        "Env: MDVIEW_NO_HIGHLIGHT also disables highlighting.\n",
-        prog);
+  fprintf(stderr,
+          "Usage: %s [options] <path-to-markdown-file>\n"
+          "\n"
+          "Options:\n"
+          "  --no-highlight   disable syntax highlighting of code blocks\n"
+          "  --no-reload      disable live-reload on file change\n"
+          "  -f, --foreground stay attached to the terminal (default: detach)\n"
+          "  --install        install mdview into ~/.local (binary + icons + "
+          ".desktop)\n"
+          "  --uninstall      undo --install\n"
+          "  -h, --help       show this help\n"
+          "\n"
+          "Env: MDVIEW_NO_HIGHLIGHT also disables highlighting.\n",
+          prog);
 }
 
 int main(int argc, char **argv) {
-    /* --install / --uninstall are short-circuit subcommands: handle before
-       any other arg parsing so they don't trigger "file required". */
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--install")   == 0) return mdv::do_install();
-        if (strcmp(argv[i], "--uninstall") == 0) return mdv::do_uninstall();
+  /* --install / --uninstall are short-circuit subcommands: handle before
+     any other arg parsing so they don't trigger "file required". */
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--install") == 0)
+      return mdv::do_install();
+    if (strcmp(argv[i], "--uninstall") == 0)
+      return mdv::do_uninstall();
+  }
+
+  bool no_highlight = false;
+  bool no_reload = false;
+  bool foreground = false;
+  const char *file = nullptr;
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--no-highlight") == 0)
+      no_highlight = true;
+    else if (strcmp(argv[i], "--no-reload") == 0)
+      no_reload = true;
+    else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--foreground") == 0)
+      foreground = true;
+    else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+      print_usage(argv[0]);
+      return 0;
+    } else if (argv[i][0] == '-') {
+      fprintf(stderr, "Unknown option: %s\n", argv[i]);
+      print_usage(argv[0]);
+      return 1;
+    } else if (!file)
+      file = argv[i];
+    else {
+      fprintf(stderr, "Extra argument: %s\n", argv[i]);
+      print_usage(argv[0]);
+      return 1;
     }
+  }
+  if (!file) {
+    print_usage(argv[0]);
+    return 1;
+  }
 
-    bool no_highlight = false;
-    bool no_reload    = false;
-    bool foreground   = false;
-    const char *file = nullptr;
-    for (int i = 1; i < argc; i++) {
-        if      (strcmp(argv[i], "--no-highlight") == 0) no_highlight = true;
-        else if (strcmp(argv[i], "--no-reload")    == 0) no_reload = true;
-        else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--foreground") == 0) foreground = true;
-        else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-            print_usage(argv[0]); return 0;
-        }
-        else if (argv[i][0] == '-') {
-            fprintf(stderr, "Unknown option: %s\n", argv[i]);
-            print_usage(argv[0]); return 1;
-        }
-        else if (!file) file = argv[i];
-        else {
-            fprintf(stderr, "Extra argument: %s\n", argv[i]);
-            print_usage(argv[0]); return 1;
-        }
+  /* Perf instrumentation: capture phase timestamps starting here. Always
+     captured; only printed when MDVIEW_DEBUG=1 (see on_first_frame). */
+  struct timespec _perf_t_start, _perf_t_after_read, _perf_t_after_state,
+      _perf_t_after_md, _perf_t_after_doc, _perf_t_after_create;
+  clock_gettime(CLOCK_MONOTONIC, &_perf_t_start);
+
+  /* Highlighter children may exit before we finish writing to their stdin
+     (now backed by a tempfile, so deadlock-free) or read from their stdout.
+     Ignore SIGPIPE process-wide so a stray write returns EPIPE rather
+     than killing us. */
+  signal(SIGPIPE, SIG_IGN);
+
+  std::ifstream f(file);
+  if (!f.is_open()) {
+    fprintf(stderr, "Error: cannot open '%s'\n", file);
+    return 1;
+  }
+  std::ostringstream ss;
+  ss << f.rdbuf();
+  f.close();
+  clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_read);
+
+  /* Fork off so the launching shell gets its prompt back immediately. We
+     do this AFTER reading the file so that "no such file" still surfaces
+     to the user's terminal. setsid() puts the child in its own session,
+     so closing the terminal won't SIGHUP the viewer. All three standard
+     fds are redirected to /dev/null; if any of them stays attached to
+     the launching tty, some terminal emulators won't close cleanly on
+     Ctrl+D. Use --foreground to keep stderr visible while debugging. */
+  if (!foreground) {
+    pid_t pid = fork();
+    if (pid < 0) {
+      perror("fork");
+      return 1;
     }
-    if (!file) { print_usage(argv[0]); return 1; }
-
-    /* Perf instrumentation: capture phase timestamps starting here. Always
-       captured; only printed when MDVIEW_DEBUG=1 (see on_first_frame). */
-    struct timespec _perf_t_start, _perf_t_after_read, _perf_t_after_state,
-                    _perf_t_after_md, _perf_t_after_doc, _perf_t_after_create;
-    clock_gettime(CLOCK_MONOTONIC, &_perf_t_start);
-
-    /* Highlighter children may exit before we finish writing to their stdin
-       (now backed by a tempfile, so deadlock-free) or read from their stdout.
-       Ignore SIGPIPE process-wide so a stray write returns EPIPE rather
-       than killing us. */
-    signal(SIGPIPE, SIG_IGN);
-
-    std::ifstream f(file);
-    if (!f.is_open()) { fprintf(stderr, "Error: cannot open '%s'\n", file); return 1; }
-    std::ostringstream ss; ss << f.rdbuf(); f.close();
-    clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_read);
-
-    /* Fork off so the launching shell gets its prompt back immediately. We
-       do this AFTER reading the file so that "no such file" still surfaces
-       to the user's terminal. setsid() puts the child in its own session,
-       so closing the terminal won't SIGHUP the viewer. All three standard
-       fds are redirected to /dev/null; if any of them stays attached to
-       the launching tty, some terminal emulators won't close cleanly on
-       Ctrl+D. Use --foreground to keep stderr visible while debugging. */
-    if (!foreground) {
-        pid_t pid = fork();
-        if (pid < 0) { perror("fork"); return 1; }
-        if (pid > 0) return 0;
-        setsid();
-        int dn = open("/dev/null", O_RDWR);
-        if (dn >= 0) {
-            dup2(dn, STDIN_FILENO);
-            dup2(dn, STDOUT_FILENO);
-            dup2(dn, STDERR_FILENO);
-            if (dn > 2) close(dn);
-        }
+    if (pid > 0)
+      return 0;
+    setsid();
+    int dn = open("/dev/null", O_RDWR);
+    if (dn >= 0) {
+      dup2(dn, STDIN_FILENO);
+      dup2(dn, STDOUT_FILENO);
+      dup2(dn, STDERR_FILENO);
+      if (dn > 2)
+        close(dn);
     }
+  }
 
-    mdv::State  persisted = mdv::load_state();
-    mdv::Config config    = mdv::load_config();
+  mdv::State persisted = mdv::load_state();
+  mdv::Config config = mdv::load_config();
 
-    /* Hash the canonical (realpath) path for the scroll-position LRU lookup.
-       Falling back to the literal `file` string if realpath fails just
-       means symlinks aren't deduped, which isn't a correctness problem. */
-    std::string canonical_path = file;
-    { char buf[PATH_MAX]; if (realpath(file, buf)) canonical_path = buf; }
-    uint64_t path_hash = mdv::fnv1a64(canonical_path);
-    clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_state);
+  /* Hash the canonical (realpath) path for the scroll-position LRU lookup.
+     Falling back to the literal `file` string if realpath fails just
+     means symlinks aren't deduped, which isn't a correctness problem. */
+  std::string canonical_path = file;
+  {
+    char buf[PATH_MAX];
+    if (realpath(file, buf))
+      canonical_path = buf;
+  }
+  uint64_t path_hash = mdv::fnv1a64(canonical_path);
+  clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_state);
 
-    App app;
-    app.file_path = file;
-    { auto sl = app.file_path.find_last_of('/');
-      app.file_basename = (sl == std::string::npos) ? app.file_path : app.file_path.substr(sl + 1); }
-    /* Seed history with the starting file (absolute so back/forward survives a
-       later cwd change), so following a link has a valid origin to return to. */
-    { char real[PATH_MAX];
-      std::string h0 = realpath(file, real) ? std::string(real) : app.file_path;
-      app.history.push_back({h0, 0.0});
-      app.hist_idx = 0; }
-    /* Defaults for a file we've never seen come from the user's config;
-       per-file LRU overrides if present. */
-    double initial_zoom = config.zoom;
-    app.font_size       = config.font_size;
-    for (const auto &kv : persisted.files) {
-        if (kv.first == path_hash) {
-            app.scroll_x  = kv.second.scroll_x;
-            app.scroll_y  = kv.second.scroll_y;
-            initial_zoom  = kv.second.zoom;
-            app.font_size = kv.second.font_size;
-            break;
-        }
+  App app;
+  app.file_path = file;
+  {
+    auto sl = app.file_path.find_last_of('/');
+    app.file_basename = (sl == std::string::npos)
+                            ? app.file_path
+                            : app.file_path.substr(sl + 1);
+  }
+  /* Seed history with the starting file (absolute so back/forward survives a
+     later cwd change), so following a link has a valid origin to return to. */
+  {
+    char real[PATH_MAX];
+    std::string h0 = realpath(file, real) ? std::string(real) : app.file_path;
+    app.history.push_back({h0, 0.0});
+    app.hist_idx = 0;
+  }
+  /* Defaults for a file we've never seen come from the user's config;
+     per-file LRU overrides if present. */
+  double initial_zoom = config.zoom;
+  app.font_size = config.font_size;
+  for (const auto &kv : persisted.files) {
+    if (kv.first == path_hash) {
+      app.scroll_x = kv.second.scroll_x;
+      app.scroll_y = kv.second.scroll_y;
+      initial_zoom = kv.second.zoom;
+      app.font_size = kv.second.font_size;
+      break;
     }
-    app.zoom      = std::clamp(initial_zoom, ZOOM_MIN, ZOOM_MAX);
-    app.font_size = std::clamp(app.font_size, FONT_SIZE_MIN, FONT_SIZE_MAX);
-    app.dark_mode       = persisted.dark_mode;
-    app.case_sensitive  = persisted.case_sensitive;
-    app.whole_word      = persisted.whole_word;
-    app.regex_mode      = persisted.regex_mode;
-    app.source_md       = ss.str();
-    app.html            = add_heading_ids(md2html(app.source_md, app.dark_mode, app.font_size));
-    app.original_html   = app.html;
-    app.toc_entries     = extract_toc(app.original_html);
-    app.con.set_dark_mode(app.dark_mode);
-    { auto sl = app.file_path.find_last_of('/');
-      app.con.set_base_dir(sl != std::string::npos ? app.file_path.substr(0, sl) : "."); }
-    clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_md);
-    app.doc = litehtml::document::createFromString(app.html.c_str(), &app.con, litehtml::master_css);
-    clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_doc);
+  }
+  app.zoom = std::clamp(initial_zoom, ZOOM_MIN, ZOOM_MAX);
+  app.font_size = std::clamp(app.font_size, FONT_SIZE_MIN, FONT_SIZE_MAX);
+  app.dark_mode = persisted.dark_mode;
+  app.case_sensitive = persisted.case_sensitive;
+  app.whole_word = persisted.whole_word;
+  app.regex_mode = persisted.regex_mode;
+  app.source_md = ss.str();
+  app.html =
+      add_heading_ids(md2html(app.source_md, app.dark_mode, app.font_size));
+  app.original_html = app.html;
+  app.toc_entries = extract_toc(app.original_html);
+  app.con.set_dark_mode(app.dark_mode);
+  {
+    auto sl = app.file_path.find_last_of('/');
+    app.con.set_base_dir(sl != std::string::npos ? app.file_path.substr(0, sl)
+                                                 : ".");
+  }
+  clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_md);
+  app.doc = litehtml::document::createFromString(app.html.c_str(), &app.con,
+                                                 litehtml::master_css);
+  clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_doc);
 
-    /* Highlighter PATH probe + set_tool are deferred to on_first_frame, so
-       the cost of scanning $PATH for bat/pygmentize/etc. doesn't sit
-       between exec and the window appearing. dark-mode flag is still set
-       eagerly so any other read of highlighter state sees a consistent
-       value. The tool will be set to None until first paint, which is
-       fine — start_highlight is only called after first paint anyway. */
-    app.arg_no_highlight = no_highlight;
-    app.arg_no_reload    = no_reload;
-    app.highlighter.set_dark(app.dark_mode);
+  /* Highlighter PATH probe + set_tool are deferred to on_first_frame, so
+     the cost of scanning $PATH for bat/pygmentize/etc. doesn't sit
+     between exec and the window appearing. dark-mode flag is still set
+     eagerly so any other read of highlighter state sees a consistent
+     value. The tool will be set to None until first paint, which is
+     fine — start_highlight is only called after first paint anyway. */
+  app.arg_no_highlight = no_highlight;
+  app.arg_no_reload = no_reload;
+  app.highlighter.set_dark(app.dark_mode);
 
-    /* Anchor clicks: # → in-doc scroll; local .md → new mdview; else → xdg-open. */
-    app.con.set_anchor_click_cb([&app](const std::string &url) {
-        if (url.empty()) return;
-        if (url[0] == '#') {
-            scroll_to_anchor(&app, url.substr(1));
-            if (app.win) mdv_window_request_redraw(app.win);
-        } else {
-            std::string resolved;
-            if (resolve_local_md(url, app.file_path, resolved))
-                app.pending_nav = resolved;   /* deferred; run in on_mouse_button */
-            else
-                open_external_url(url);
-        }
-    });
+  /* Anchor clicks: # → in-doc scroll; local .md → new mdview; else → xdg-open.
+   */
+  app.con.set_anchor_click_cb([&app](const std::string &url) {
+    if (url.empty())
+      return;
+    if (url[0] == '#') {
+      scroll_to_anchor(&app, url.substr(1));
+      if (app.win)
+        mdv_window_request_redraw(app.win);
+    } else {
+      std::string resolved;
+      if (resolve_local_md(url, app.file_path, resolved))
+        app.pending_nav = resolved; /* deferred; run in on_mouse_button */
+      else
+        open_external_url(url);
+    }
+  });
 
-    /* Cursor from litehtml: the only one we act on is "pointer" (over an
-       <a>). For anything else we leave the cursor at whatever on_mouse_move
-       picked based on whether a text span is actually under the pointer
-       ("text" over rendered text, "default" over blank space). */
-    app.con.set_cursor_cb([&app](const std::string &name) {
-        if (!app.win) return;
-        if (name == "pointer") mdv_window_set_cursor(app.win, "pointer");
-    });
+  /* Cursor from litehtml: the only one we act on is "pointer" (over an
+     <a>). For anything else we leave the cursor at whatever on_mouse_move
+     picked based on whether a text span is actually under the pointer
+     ("text" over rendered text, "default" over blank space). */
+  app.con.set_cursor_cb([&app](const std::string &name) {
+    if (!app.win)
+      return;
+    if (name == "pointer")
+      mdv_window_set_cursor(app.win, "pointer");
+  });
 
-    mdv_callbacks cb = {};
-    cb.on_redraw = on_redraw; cb.on_resize = on_resize; cb.on_scroll = on_scroll;
-    cb.on_mouse_move = on_mouse_move; cb.on_mouse_button = on_mouse_button;
-    cb.on_key = on_key; cb.on_close = on_close;
-    cb.on_pointer_leave = on_pointer_leave; cb.on_pointer_enter = on_pointer_enter;
-    cb.on_tick = on_tick; cb.on_pinch = on_pinch;
-    cb.userdata = &app;
+  mdv_callbacks cb = {};
+  cb.on_redraw = on_redraw;
+  cb.on_resize = on_resize;
+  cb.on_scroll = on_scroll;
+  cb.on_mouse_move = on_mouse_move;
+  cb.on_mouse_button = on_mouse_button;
+  cb.on_key = on_key;
+  cb.on_close = on_close;
+  cb.on_pointer_leave = on_pointer_leave;
+  cb.on_pointer_enter = on_pointer_enter;
+  cb.on_tick = on_tick;
+  cb.on_pinch = on_pinch;
+  cb.userdata = &app;
 
-    int win_w = std::max(200, persisted.window_width);
-    int win_h = std::max(200, persisted.window_height);
-    std::string title = std::string("mdview - ") + file;
-    mdv_window *w = mdv_window_create(title.c_str(), win_w, win_h, &cb);
-    if (!w) { fprintf(stderr, "Error: cannot create Wayland window\n"); return 1; }
-    clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_create);
-    /* Copy local phase timestamps into App so on_first_frame can read them. */
-    app.perf.t_start        = _perf_t_start;
-    app.perf.t_after_read   = _perf_t_after_read;
-    app.perf.t_after_state  = _perf_t_after_state;
-    app.perf.t_after_md     = _perf_t_after_md;
-    app.perf.t_after_doc    = _perf_t_after_doc;
-    app.perf.t_after_create = _perf_t_after_create;
-    app.win = w;
-    /* Sync the viewport to the actual window dims. The compositor's initial
-       xdg_toplevel.configure usually echoes the size we requested, which
-       means window.c's resize-on-change guard short-circuits and on_resize
-       never fires, leaving vp_w/vp_h at the struct defaults (900×700)
-       instead of the restored window size. Route through on_resize so the
-       first layout uses the right dimensions. */
-    on_resize(w, mdv_window_width(w), mdv_window_height(w), &app);
+  int win_w = std::max(200, persisted.window_width);
+  int win_h = std::max(200, persisted.window_height);
+  std::string title = std::string("mdview - ") + file;
+  mdv_window *w = mdv_window_create(title.c_str(), win_w, win_h, &cb);
+  if (!w) {
+    fprintf(stderr, "Error: cannot create Wayland window\n");
+    return 1;
+  }
+  clock_gettime(CLOCK_MONOTONIC, &_perf_t_after_create);
+  /* Copy local phase timestamps into App so on_first_frame can read them. */
+  app.perf.t_start = _perf_t_start;
+  app.perf.t_after_read = _perf_t_after_read;
+  app.perf.t_after_state = _perf_t_after_state;
+  app.perf.t_after_md = _perf_t_after_md;
+  app.perf.t_after_doc = _perf_t_after_doc;
+  app.perf.t_after_create = _perf_t_after_create;
+  app.win = w;
+  /* Sync the viewport to the actual window dims. The compositor's initial
+     xdg_toplevel.configure usually echoes the size we requested, which
+     means window.c's resize-on-change guard short-circuits and on_resize
+     never fires, leaving vp_w/vp_h at the struct defaults (900×700)
+     instead of the restored window size. Route through on_resize so the
+     first layout uses the right dimensions. */
+  on_resize(w, mdv_window_width(w), mdv_window_height(w), &app);
 
-    /* on_first_frame fires the deferred-init work: highlighter PATH probe,
-       inotify watcher, and the initial syntax-highlight pass. */
-    mdv_window_set_after_init(w, on_first_frame, &app);
+  /* on_first_frame fires the deferred-init work: highlighter PATH probe,
+     inotify watcher, and the initial syntax-highlight pass. */
+  mdv_window_set_after_init(w, on_first_frame, &app);
 
-    mdv_window_run(w);
+  mdv_window_run(w);
 
-    /* Snapshot state before tearing down. Start from the loaded `persisted`
-       to carry forward other files' view-state LRU entries; then update
-       this file's slot (move-to-back + cap to FILES_LRU_MAX). */
-    mdv::State out     = persisted;
-    out.window_width   = mdv_window_surface_width(w);
-    out.window_height  = mdv_window_surface_height(w);
-    out.dark_mode      = app.dark_mode;
-    out.case_sensitive = app.case_sensitive;
-    out.whole_word     = app.whole_word;
-    out.regex_mode     = app.regex_mode;
-    mdv::files_touch(out, path_hash, { app.scroll_x, app.scroll_y, app.zoom, app.font_size });
-    mdv::save_state(out);
+  /* Snapshot state before tearing down. Start from the loaded `persisted`
+     to carry forward other files' view-state LRU entries; then update
+     this file's slot (move-to-back + cap to FILES_LRU_MAX). */
+  mdv::State out = persisted;
+  out.window_width = mdv_window_surface_width(w);
+  out.window_height = mdv_window_surface_height(w);
+  out.dark_mode = app.dark_mode;
+  out.case_sensitive = app.case_sensitive;
+  out.whole_word = app.whole_word;
+  out.regex_mode = app.regex_mode;
+  mdv::files_touch(out, path_hash,
+                   {app.scroll_x, app.scroll_y, app.zoom, app.font_size});
+  mdv::save_state(out);
 
-    app.live_reloader.stop();
-    app.highlighter.stop();
-    mdv_window_destroy(w);
-    return 0;
+  app.live_reloader.stop();
+  app.highlighter.stop();
+  mdv_window_destroy(w);
+  return 0;
 }
