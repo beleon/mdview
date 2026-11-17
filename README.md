@@ -194,11 +194,63 @@ mdview keeps two files under `~/.config/mdview/`:
 
 - **`state`** — machine-managed. Per-file scroll / zoom / text-size LRU (hashed paths, last 20 files), last window size, dark mode, search flags. Rewritten on every close; don't edit by hand.
 - **`config`** — user-editable. Defaults for newly-opened files only; the LRU always wins for files you've already adjusted. Optional: if missing, built-in defaults apply.
+- **`dark_theme`** —   user-editable. Optional: if missing, built-in defaults apply. Any unset fields will use built-in defaults
+- **`light_theme`** —   user-editable. Optional: if missing, built-in defaults apply. Any unset fields will use built-in defaults
 
 ```ini
 # ~/.config/mdview/config
 font_size = 16    # body font-size in px (8..48)
 zoom      = 1.0   # pinch-zoom level, 1.0 = 100% (1.0..5.0)
+```
+
+```ini
+# ~/.config/mdview/dark_theme
+# Document
+body_bg = #1e1e1e
+body_color = #d4d4d4
+h_border_strong = #444444
+h_border_light = #333333
+code_bg = #2a2a2a
+code_border = #3a3a3a
+bq_border = #3a3a3a
+bq_color = #999999
+link = #6db5ff
+th_bg = #2a2a2a
+border = #3a3a3a
+hr_border = #3a3a3a
+
+# Chrome
+chrome_bg = 0.16,0.16,0.16
+chrome_text = 0.85,0.85,0.85
+chrome_dim = 0.60,0.60,0.60
+chrome_sep = 0.30,0.30,0.30
+chrome_accent = 0.50,0.70,1.00
+chrome_accent_bg = 0.40,0.60,1.00,0.20
+```
+
+```ini
+# ~/.config/mdview/light_theme
+# Document
+body_bg = #ffffff
+body_color = #222222
+h_border_strong = #cccccc
+h_border_light = #eeeeee
+code_bg = #f4f4f4
+code_border = #dddddd
+bq_border = #dddddd
+bq_color = #555555
+link = #0066cc
+th_bg = #f0f0f0
+border = #dddddd
+hr_border = #dddddd
+
+# Chrome
+chrome_bg = 0.97,0.97,0.97
+chrome_text = 0.10,0.10,0.10
+chrome_dim = 0.45,0.45,0.45
+chrome_sep = 0.60,0.60,0.60
+chrome_accent = 0.20,0.50,0.90
+chrome_accent_bg = 0.20,0.50,0.90,0.18
 ```
 
 `#` comments and whitespace around `=` are tolerated.
