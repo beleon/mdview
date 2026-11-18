@@ -116,7 +116,32 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
 
 Requires CMake ≥ 3.16 and a C++17 compiler.
 
+### Packages
+
+```bash
+packaging/build-packages.sh   # dist/mdview_<version>_amd64.deb and dist/mdview-<version>-1.x86_64.rpm
+packaging/test-packages.sh    # clean-room install + headless render test on Ubuntu, Debian and Fedora
+```
+
+Each package is compiled on its own distro family (Ubuntu 24.04 for the
+`.deb`, Fedora 43 for the `.rpm`) and declares the dependencies that
+distro's own tooling derives from the binary. Needs Podman and
+[nfpm](https://nfpm.goreleaser.com).
+
 ### Install
+
+amd64 packages are attached to each release:
+
+```bash
+sudo apt install ./mdview_<version>_amd64.deb      # Ubuntu 24.04+, Debian 13+
+sudo dnf install ./mdview-<version>-1.x86_64.rpm   # Fedora 43+
+```
+
+They install `/usr/bin/mdview`, the icons and the `.desktop` entry
+system-wide and pull in the runtime libraries listed
+[below](#runtime-dependencies).
+
+Anywhere else, the standalone binary installs itself for the current user:
 
 ```bash
 ./mdview --install      # writes binary, icons, .desktop entry under ~/.local/

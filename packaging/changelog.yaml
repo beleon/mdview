@@ -1,0 +1,26 @@
+# rpm/deb changelog, consumed by nfpm (top-level `changelog:` in nfpm.yaml).
+# nfpm generates both the rpm changelog metadata and the Debian changelog
+# from this one file. Newest entry first; build-packages.sh refuses to build
+# when its semver differs from the version in CMakeLists.txt.
+#
+# Notes must be single-line: nfpm renders every continuation line of a
+# multi-line scalar as a bogus sub-bullet.
+- semver: 1.1.1
+  date: '2026-08-06T00:00:00Z'
+  packager: Leon Becker <13580066+beleon@users.noreply.github.com>
+  changes:
+  - note: Pointing at a link shows its target in the status bar, so a local .md or [[wiki]] link can be told apart from an external URL before you click it.
+  - note: 'Link hit-testing is fixed: inline links were almost never matched, which also hid Open Link and Copy Link URL from the context menu.'
+
+- semver: 1.1.0
+  date: '2026-06-28T00:00:00Z'
+  packager: Leon Becker <13580066+beleon@users.noreply.github.com>
+  changes:
+  - note: 'Clicking a link to a local Markdown file opens it in place, with browser-style history (Alt+Left / Backspace back, Alt+Right / Shift+Backspace forward). Relative paths, file:// URLs and [[wiki]] links are supported.'
+  - note: The .desktop launcher passes -f so windows started from a desktop shell are tracked correctly.
+
+- semver: 1.0.0
+  date: '2026-05-22T00:00:00Z'
+  packager: Leon Becker <13580066+beleon@users.noreply.github.com>
+  changes:
+  - note: 'First release: a native Wayland Markdown viewer built on md4c, litehtml, Cairo and Pango, with SVG support, find bar, outline sidebar, syntax highlighting via external tools, live reload and per-file view state.'
