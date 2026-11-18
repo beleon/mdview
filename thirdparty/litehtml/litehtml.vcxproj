@@ -202,9 +202,7 @@
     <ClCompile Include="src\el_text.cpp" />
     <ClCompile Include="src\el_title.cpp" />
     <ClCompile Include="src\el_tr.cpp" />
-    <ClCompile Include="src\encodings.cpp">
-      <ExcludedFromBuild Condition="'$(LITEHTML_LEGACY_ENCODINGS)'!='1'">true</ExcludedFromBuild>
-    </ClCompile>
+    <ClCompile Include="src\encodings.cpp" />
     <ClCompile Include="src\flex_item.cpp" />
     <ClCompile Include="src\flex_line.cpp" />
     <ClCompile Include="src\formatting_context.cpp" />
@@ -294,7 +292,6 @@
     <ClCompile Include="src\style.cpp" />
     <ClCompile Include="src\stylesheet.cpp" />
     <ClCompile Include="src\table.cpp" />
-    <ClCompile Include="src\tstring_view.cpp" />
     <ClCompile Include="src\url.cpp" />
     <ClCompile Include="src\url_path.cpp" />
     <ClCompile Include="src\utf8_strings.cpp" />

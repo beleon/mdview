@@ -1,8 +1,31 @@
-cmake_minimum_required(VERSION 3.11)
+cmake_minimum_required(VERSION 3.20)
 
 project(litehtml LANGUAGES C CXX)
 
 option(LITEHTML_BUILD_TESTING "enable testing for litehtml" OFF)
+option(LITEHTML_ENABLE_LINT "enable linting for litehtml" ON)
+option(LITEHTML_BUILD_GRID_TESTS "build CSS Grid regression tests" OFF)
+option(LITEHTML_BUILD_MATH_TESTS "build CSS math regression tests" OFF)
+option(LITEHTML_BUILD_CONTAINER_CAIRO "build litehtml_container_cairo library (requires cairo)" OFF)
+option(LITEHTML_BUILD_CONTAINER_PANGO "build litehtml_container_pango library (requires pango, pangocairo)" OFF)
+option(LITEHTML_BUILD_RENDER2PNG "build litehtml_render2png library (requires gtk4, gdk-pixbuf-2.0, fontconfig)" OFF)
+option(LITEHTML_BUILD_DRAW_BUFFER "build litehtml_draw_buffer library (requires cairo)" OFF)
+option(LITEHTML_BUILD_WEBPAGE "build litehtml_webpage library (requires libcurl)" OFF)
+option(LITEHTML_BUILD_GTKMM4 "build litehtml_gtkmm4 library (requires gtkmm-4.0)" OFF)
+
+# Enable libraries required by the selected ones
+if(LITEHTML_BUILD_GTKMM4)
+	set(LITEHTML_BUILD_WEBPAGE ON)
+	set(LITEHTML_BUILD_DRAW_BUFFER ON)
+endif()
+if(LITEHTML_BUILD_WEBPAGE OR LITEHTML_BUILD_RENDER2PNG)
+	set(LITEHTML_BUILD_CONTAINER_PANGO ON)
+endif()
+if(LITEHTML_BUILD_CONTAINER_PANGO)
+	set(LITEHTML_BUILD_CONTAINER_CAIRO ON)
+endif()
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if (NOT LITEHTML_BUILD_TESTING)
 # Soname
@@ -21,6 +44,9 @@ endif()
 set(SOURCE_LITEHTML
 	src/codepoint.cpp
 	src/css_length.cpp
+	src/css_grid.cpp
+	src/grid_placement.cpp
+	src/grid_sizing.cpp
 	src/css_selector.cpp
 	src/css_tokenizer.cpp
 	src/css_parser.cpp
@@ -55,7 +81,6 @@ set(SOURCE_LITEHTML
 	src/style.cpp
 	src/stylesheet.cpp
 	src/table.cpp
-	src/tstring_view.cpp
 	src/url.cpp
 	src/url_path.cpp
 	src/utf8_strings.cpp
@@ -72,12 +97,14 @@ set(SOURCE_LITEHTML
 	src/render_inline_context.cpp
 	src/render_table.cpp
 	src/render_flex.cpp
+	src/render_grid.cpp
 	src/render_image.cpp
 	src/formatting_context.cpp
 	src/flex_item.cpp
 	src/flex_line.cpp
 	src/background.cpp
 	src/gradient.cpp
+	src/render_text.cpp
 )
 
 set(HEADER_LITEHTML
@@ -86,6 +113,7 @@ set(HEADER_LITEHTML
 	include/litehtml/borders.h
 	include/litehtml/codepoint.h
 	include/litehtml/css_length.h
+	include/litehtml/css_grid.h
 	include/litehtml/css_margins.h
 	include/litehtml/css_offsets.h
 	include/litehtml/css_position.h
@@ -125,8 +153,8 @@ set(HEADER_LITEHTML
 	include/litehtml/style.h
 	include/litehtml/stylesheet.h
 	include/litehtml/table.h
-	include/litehtml/tstring_view.h
 	include/litehtml/types.h
+	include/litehtml/pixel_type.h
 	include/litehtml/url.h
 	include/litehtml/url_path.h
 	include/litehtml/utf8_strings.h
@@ -136,6 +164,7 @@ set(HEADER_LITEHTML
 	include/litehtml/line_box.h
 	include/litehtml/render_item.h
 	include/litehtml/render_flex.h
+	include/litehtml/render_grid.h
 	include/litehtml/render_image.h
 	include/litehtml/render_inline.h
 	include/litehtml/render_table.h
@@ -150,7 +179,37 @@ set(HEADER_LITEHTML
 	include/litehtml/gradient.h
 	include/litehtml/font_description.h
 	include/litehtml/scroll_view.h
+	include/litehtml/css_values.h
+	include/litehtml/render_text.h
 )
+
+find_program(CLANG_TIDY_EXE NAMES "clang-tidy")
+
+if(CLANG_TIDY_EXE AND LITEHTML_ENABLE_LINT)
+    set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_EXE};-warnings-as-errors=*")
+else()
+    message(WARNING "Clang-Tidy not found or linting disabled. Static analysis skipped.")
+endif()
+
+# Added before the clang-tidy and warning settings below so they don't apply to these targets
+if(LITEHTML_BUILD_CONTAINER_CAIRO)
+	add_subdirectory(containers/cairo)
+endif()
+if(LITEHTML_BUILD_CONTAINER_PANGO)
+	add_subdirectory(containers/cairo_pango)
+endif()
+if(LITEHTML_BUILD_RENDER2PNG)
+	add_subdirectory(containers/render2png)
+endif()
+if(LITEHTML_BUILD_DRAW_BUFFER)
+	add_subdirectory(support/draw_buffer)
+endif()
+if(LITEHTML_BUILD_WEBPAGE)
+	add_subdirectory(support/webpage)
+endif()
+if(LITEHTML_BUILD_GTKMM4)
+	add_subdirectory(support/gtkmm4)
+endif()
 
 set(PROJECT_LIB_VERSION ${PROJECT_MAJOR}.${PROJECT_MINOR}.0)
 set(PROJECT_SO_VERSION ${PROJECT_MAJOR})
@@ -159,9 +218,25 @@ if (MSVC)
 	# warning level 4
 	add_compile_options(/W4)
 	add_compile_options(/permissive- /utf-8)
+	add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/EHsc>)
 else()
+	add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fexceptions>)
 	# additional warnings
-	add_compile_options(-Wall -Wextra -Wpedantic -Wfloat-conversion)
+	add_compile_options(-Wall
+	                    -Wextra
+						-Wpedantic
+						-Wfloat-conversion
+						-Wnon-virtual-dtor
+						-Wold-style-cast
+						-Wredundant-move
+						-Woverloaded-virtual
+						-Wsign-promo
+						-Wfloat-equal
+						-Wcast-qual
+						-Wzero-as-null-pointer-constant
+						-Woverloaded-virtual
+						-Wredundant-decls
+						)
 endif()
 
 if(LITEHTML_LEGACY_ENCODINGS)
@@ -169,11 +244,14 @@ if(LITEHTML_LEGACY_ENCODINGS)
 endif()
 
 add_library(${PROJECT_NAME} ${HEADER_LITEHTML} ${SOURCE_LITEHTML})
-set_target_properties(${PROJECT_NAME} PROPERTIES VERSION ${PROJECT_LIB_VERSION} SOVERSION ${PROJECT_SO_VERSION})
 
 if(NOT LITEHTML_LEGACY_ENCODINGS)
 	target_compile_definitions(${PROJECT_NAME} PUBLIC LITEHTML_UTF8_ONLY)
 endif()
+set_target_properties(${PROJECT_NAME} PROPERTIES
+	VERSION ${PROJECT_LIB_VERSION}
+	SOVERSION ${PROJECT_SO_VERSION}
+	)
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
 	CXX_STANDARD 17
@@ -190,6 +268,20 @@ target_include_directories(${PROJECT_NAME} PRIVATE include/${PROJECT_NAME})
 
 # Gumbo
 target_link_libraries(${PROJECT_NAME} PUBLIC gumbo)
+
+if(LITEHTML_BUILD_GRID_TESTS)
+	enable_testing()
+	add_executable(litehtml-grid-tests tests/css_grid_test.cpp)
+	target_link_libraries(litehtml-grid-tests PRIVATE litehtml)
+	add_test(NAME litehtml-grid-tests COMMAND litehtml-grid-tests)
+endif()
+
+if(LITEHTML_BUILD_MATH_TESTS)
+	enable_testing()
+	add_executable(litehtml-math-tests tests/css_math_test.cpp)
+	target_link_libraries(litehtml-math-tests PRIVATE litehtml)
+	add_test(NAME litehtml-math-tests COMMAND litehtml-math-tests)
+endif()
 
 # install and export
 install(TARGETS ${PROJECT_NAME}
@@ -209,7 +301,7 @@ else ()
 	ExternalProject_Add(
 			litehtml-tests
 			GIT_REPOSITORY      https://github.com/litehtml/litehtml-tests.git
-			GIT_TAG             f750c7c4c1f0b2db63049f45ce505442b2685fa6
+			GIT_TAG             7f4ff082574bf560b816e4a7e35754726e8bb40d
 			SOURCE_DIR          "${CMAKE_BINARY_DIR}/litehtml-tests-src"
 			BINARY_DIR          "${CMAKE_BINARY_DIR}/litehtml-tests-build"
 			CMAKE_ARGS          -DLITEHTML_PATH=${CMAKE_CURRENT_SOURCE_DIR}

@@ -55,6 +55,10 @@ static const Theme THEME_DARK = {
     "#3a3a3a"
 };
 
+/* litehtml hands back the boxes a mouse event dirtied; mdview redraws the
+   whole viewport on any change, so the callback has nothing to record. */
+static void ignore_redraw(const litehtml::position &) {}
+
 /* Convert [[Name]] and [[Name|Display]] wiki links to standard Markdown before
    md4c sees the source. Names with spaces use angle-bracket URL syntax so
    md4c parses them correctly. */
@@ -1050,8 +1054,7 @@ static std::string href_from_over(App *a) {
 /* Same, for callers holding a point that hasn't been hit-tested yet. */
 static std::string href_at(App *a, int doc_x, int doc_y) {
     if (!a->doc) return "";
-    std::vector<litehtml::position> rb;
-    a->doc->on_mouse_over(doc_x, doc_y, doc_x, doc_y, rb);
+    a->doc->on_mouse_over(doc_x, doc_y, doc_x, doc_y, ignore_redraw);
     return href_from_over(a);
 }
 
@@ -1715,8 +1718,7 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
 
     if (!a->doc) { set_hover_href(a, w, ""); return; }
     int dx2 = (int)((x_eff + a->scroll_x) / a->zoom), dy2 = (int)((y + a->scroll_y) / a->zoom);
-    std::vector<litehtml::position> rb;
-    if (a->doc->on_mouse_over(dx2, dy2, dx2, dy2, rb)) mdv_window_request_redraw(w);
+    if (a->doc->on_mouse_over(dx2, dy2, dx2, dy2, ignore_redraw)) mdv_window_request_redraw(w);
 
     /* Status-bar link readout, read straight off the hit test above. */
     std::string h = in_doc ? href_from_over(a) : std::string();
@@ -1879,9 +1881,8 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
     if (btn != BTN_LEFT) return;  /* litehtml only models left-button events */
     if (!a->doc) return;
     int dx = (int)((x_eff + a->scroll_x) / a->zoom), dy = (int)((y + a->scroll_y) / a->zoom);
-    std::vector<litehtml::position> rb;
-    if (pr) a->doc->on_lbutton_down(dx, dy, dx, dy, rb);
-    else    a->doc->on_lbutton_up(dx, dy, dx, dy, rb);
+    if (pr) a->doc->on_lbutton_down(dx, dy, dx, dy, ignore_redraw);
+    else    a->doc->on_lbutton_up(dx, dy, dx, dy, ignore_redraw);
 
     /* on_lbutton_up may have queued a local-link navigation (see App::
        pending_nav). Run it now, after litehtml's dispatch has returned, so

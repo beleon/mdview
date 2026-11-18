@@ -1,54 +1,48 @@
 #include "render_block.h"
-#include "render_inline_context.h"
-#include "render_block_context.h"
+
 #include "document.h"
 #include "document_container.h"
+#include "formatting_context.h"
 #include "html_tag.h"
+#include "render_block_context.h"
+#include "render_inline_context.h"
 #include "types.h"
+#include <algorithm>
 
-litehtml::pixel_t litehtml::render_item_block::place_float(const std::shared_ptr<render_item> &el, pixel_t top, const containing_block_context &self_size, formatting_context* fmt_ctx)
+litehtml::pixel_t litehtml::render_item_block::place_float(const std::shared_ptr<render_item>& el, pixel_t top,
+                                                           const containing_block_context& self_size,
+                                                           formatting_context*             fmt_ctx)
 {
-    pixel_t line_top	= fmt_ctx->get_cleared_top(el, top);
-    pixel_t line_left	= 0;
-    pixel_t line_right	= self_size.render_width;
-	fmt_ctx->get_line_left_right(line_top, self_size.render_width, line_left, line_right);
+    pixel_t line_top  = fmt_ctx->get_cleared_top(el, top);
+    pixel_t line_left = 0_px;
 
-    pixel_t ret_width = 0;
+    auto ret_width = el->render(line_left, line_top, self_size, fmt_ctx);
 
-	pixel_t min_rendered_width = el->render(line_left, line_top, self_size.new_width(line_right), fmt_ctx);
-	if(min_rendered_width < el->width() && el->src_el()->css().get_width().is_predefined())
-	{
-		el->render(line_left, line_top, self_size.new_width(min_rendered_width), fmt_ctx);
-	}
-
-    if (el->src_el()->css().get_float() == float_left)
+    formatting_context::new_position new_pos;
+    formatting_context::el_position  el_pos;
+    el_pos.el_pos           = el->pos();
+    el_pos.el_pos          += el->get_margins();
+    el_pos.el_pos          += el->get_paddings();
+    el_pos.el_pos          += el->get_borders();
+    el_pos.container_width  = self_size.render_width;
+    if(el->src_el()->css().get_float() == float_left)
     {
-        if(el->right() > line_right)
-        {
-			line_top = fmt_ctx->find_next_line_top(el->top(), el->width(), self_size.render_width);
-            el->pos().x = fmt_ctx->get_line_left(line_top) + el->content_offset_left();
-            el->pos().y = line_top + el->content_offset_top();
-        }
-		fmt_ctx->add_float(el, min_rendered_width, self_size.context_idx);
-		fix_line_width(float_left, self_size, fmt_ctx);
-
-		ret_width = fmt_ctx->find_min_left(line_top, self_size.context_idx);
-    } else if (el->src_el()->css().get_float() == float_right)
+        new_pos = fmt_ctx->place_to_left(el_pos);
+    } else if(el->src_el()->css().get_float() == float_right)
     {
-        if(line_left + el->width() > line_right)
-        {
-            pixel_t new_top = fmt_ctx->find_next_line_top(el->top(), el->width(), self_size.render_width);
-            el->pos().x = fmt_ctx->get_line_right(new_top, self_size.render_width) - el->width() + el->content_offset_left();
-            el->pos().y = new_top + el->content_offset_top();
-        } else
-        {
-            el->pos().x = line_right - el->width() + el->content_offset_left();
-        }
-		fmt_ctx->add_float(el, min_rendered_width, self_size.context_idx);
-		fix_line_width(float_right, self_size, fmt_ctx);
-		line_right = fmt_ctx->find_min_right(line_top, self_size.render_width, self_size.context_idx);
-		ret_width = self_size.render_width - line_right;
+        el->pos().x     = self_size.render_width.value - el_pos.el_pos.width + el->content_offset_left();
+        el_pos.el_pos.x = self_size.render_width.value - el_pos.el_pos.width;
+        new_pos         = fmt_ctx->place_to_right(el_pos);
     }
+    if(new_pos.found)
+    {
+        el->pos().x = new_pos.left + el->content_offset_left();
+        el->pos().y = new_pos.top + el->content_offset_top();
+    }
+    ret_width += self_size.render_width.value - new_pos.width;
+    fmt_ctx->add_float(el, self_size.context_idx);
+    fix_line_width(el->src_el()->css().get_float(), self_size, fmt_ctx);
+
     return ret_width;
 }
 
@@ -57,26 +51,29 @@ std::shared_ptr<litehtml::render_item> litehtml::render_item_block::init()
     std::shared_ptr<render_item> ret;
 
     // Initialize indexes for list items
-    if(src_el()->css().get_display() == display_list_item && src_el()->css().get_list_style_type() >= list_style_type_armenian)
+    if(src_el()->css().get_display() == display_list_item &&
+       src_el()->css().get_list_style_type() >= list_style_type_armenian)
     {
-        if (auto p = src_el()->parent())
+        if(auto p = src_el()->parent())
         {
             int val = atoi(p->get_attr("start", "1"));
-			for(const auto &child : p->children())
+            for(const auto& child : p->children())
             {
-                if (child == src_el())
+                if(child == src_el())
                 {
                     src_el()->set_attr("list_index", std::to_string(val).c_str());
                     break;
                 }
-                else if (child->css().get_display() == display_list_item)
+                if(child->css().get_display() == display_list_item)
+                {
                     val++;
+                }
             }
         }
     }
     // Split inline blocks with box blocks inside
     auto iter = m_children.begin();
-    while (iter != m_children.end())
+    while(iter != m_children.end())
     {
         const auto& el = *iter;
         if(el->src_el()->css().get_display() == display_inline && !el->children().empty())
@@ -99,38 +96,42 @@ std::shared_ptr<litehtml::render_item> litehtml::render_item_block::init()
     }
 
     bool has_block_level = false;
-	bool has_inlines = false;
-    for (const auto& el : m_children)
+    bool has_inlines     = false;
+    for(const auto& el : m_children)
     {
-		if(!el->src_el()->is_float())
-		{
-			if (el->src_el()->is_block_box())
-			{
-				has_block_level = true;
-			} else if (el->src_el()->is_inline())
-			{
-				has_inlines = true;
-			}
-		}
+        if(!el->src_el()->is_float())
+        {
+            if(el->src_el()->is_block_box())
+            {
+                has_block_level = true;
+            } else if(el->src_el()->is_inline())
+            {
+                has_inlines = true;
+            }
+        }
         if(has_block_level && has_inlines)
+        {
             break;
+        }
     }
     if(has_block_level)
     {
         ret = std::make_shared<render_item_block_context>(src_el());
         ret->parent(parent());
 
-        auto doc = src_el()->get_document();
+        auto                 doc = src_el()->get_document();
         decltype(m_children) new_children;
         decltype(m_children) inlines;
-        bool not_ws_added = false;
-        for (const auto& el : m_children)
+        bool                 not_ws_added = false;
+        for(const auto& el : m_children)
         {
             if(el->src_el()->is_inline())
             {
                 inlines.push_back(el);
                 if(!el->src_el()->is_white_space())
+                {
                     not_ws_added = true;
+                }
             } else
             {
                 if(not_ws_added)
@@ -171,7 +172,7 @@ std::shared_ptr<litehtml::render_item> litehtml::render_item_block::init()
         ret = std::make_shared<render_item_inline_context>(src_el());
         ret->parent(parent());
         ret->children() = children();
-        for (const auto &el: ret->children())
+        for(const auto& el : ret->children())
         {
             el->parent(ret);
         }
@@ -187,159 +188,159 @@ std::shared_ptr<litehtml::render_item> litehtml::render_item_block::init()
     return ret;
 }
 
-litehtml::pixel_t litehtml::render_item_block::_render(pixel_t x, pixel_t y, const containing_block_context &containing_block_size, formatting_context* fmt_ctx, bool second_pass)
+litehtml::pixel_t litehtml::render_item_block::_render(pixel_t x, pixel_t y,
+                                                       const containing_block_context& containing_block_size,
+                                                       formatting_context* fmt_ctx, bool second_pass)
 {
-	containing_block_context self_size = calculate_containing_block_context(containing_block_size);
+    containing_block_context self_size = calculate_containing_block_context(containing_block_size);
+
+    // A width clamped by min/max-width still reports the width its content takes without the clamp
+    const bool clamped = self_size.width.type != containing_block_context::cbc_value_type_absolute && !second_pass &&
+                         !is_root() && self_size.unclamped_render_width != self_size.render_width.value;
+    const bool intrinsic_min_height = css().get_min_height().is_intrinsic_sizing();
+    const bool intrinsic_max_height = css().get_max_height().is_intrinsic_sizing();
+    bool       content_measured     = false;
+    pixel_t    measured_width       = 0_px;
+    if(intrinsic_min_height || intrinsic_max_height)
+    {
+        auto               measure      = self_size;
+        auto               old_margins  = m_margins;
+        formatting_context measure_ctx  = *fmt_ctx;
+        measure.min_height              = {0_px, containing_block_context::cbc_value_type_none};
+        measure.max_height              = {0_px, containing_block_context::cbc_value_type_none};
+        measure.size_mode              |= containing_block_context::size_mode_measure_height;
+        m_pos.height                    = 0_px;
+        measured_width                  = _render_content(x, y, second_pass, measure, &measure_ctx);
+        auto natural_height             = m_pos.height;
+        if(src_el()->is_block_formatting_context())
+        {
+            natural_height = std::max(natural_height, measure_ctx.get_floats_height());
+        }
+        natural_height             = std::max(0_px, natural_height);
+        m_intrinsic_content_height = natural_height;
+
+        const bool flex_or_grid =
+            is_one_of(css().get_display(), display_flex, display_inline_flex, display_grid, display_inline_grid);
+        const bool intrinsic_bounds_only = (intrinsic_min_height || css().get_min_height().is_auto_or_none()) &&
+                                           (intrinsic_max_height || css().get_max_height().is_auto_or_none());
+        const bool same_container_height =
+            self_size.height.type == containing_block_context::cbc_value_type_auto ||
+            std::max(0_px, self_size.height.value - box_sizing_height()) == natural_height;
+        content_measured = !clamped && (!flex_or_grid || (intrinsic_bounds_only && same_container_height));
+        if(content_measured)
+        {
+            *fmt_ctx = std::move(measure_ctx);
+        } else
+        {
+            m_margins    = old_margins;
+            m_pos.height = 0_px;
+        }
+
+        if(intrinsic_min_height)
+        {
+            self_size.min_height = {natural_height, containing_block_context::cbc_value_type_absolute};
+        }
+        if(intrinsic_max_height)
+        {
+            self_size.max_height = {natural_height, containing_block_context::cbc_value_type_absolute};
+        }
+    }
 
     //*****************************************
     // Render content
     //*****************************************
-	pixel_t ret_width = _render_content(x, y, second_pass, self_size, fmt_ctx);
+    pixel_t natural_width = 0_px;
+    if(clamped)
+    {
+        containing_block_context natural_size    = self_size;
+        formatting_context       natural_fmt_ctx = *fmt_ctx; // keep the measuring pass from leaving floats behind
+        natural_size.width.value = natural_size.render_width.value = self_size.unclamped_render_width;
+        natural_width = _render_content(x, y, second_pass, natural_size, &natural_fmt_ctx);
+    }
+    auto ret_width = content_measured ? measured_width : _render_content(x, y, second_pass, self_size, fmt_ctx);
+    if(clamped)
+    {
+        ret_width = natural_width;
+    }
     //*****************************************
 
-	if (src_el()->css().get_display() == display_list_item)
-	{
-		if(m_pos.height == 0)
-		{
-			m_pos.height = css().line_height().computed_value;
-		}
-	}
+    if(src_el()->css().get_display() == display_list_item)
+    {
+        if(m_pos.height == 0_px)
+        {
+            m_pos.height = css().line_height().computed_value;
+        }
+    }
 
-	bool requires_rerender = false;		// when true, the second pass for content rendering is required
+    if(self_size.width.type == containing_block_context::cbc_value_type_absolute)
+    {
+        m_pos.width = self_size.render_width;
+        ret_width   = m_pos.width;
+    }
 
-	// Set block width
-	if(!(containing_block_size.size_mode & containing_block_context::size_mode_content))
-	{
-		if(self_size.width.type == containing_block_context::cbc_value_type_absolute)
-		{
-			ret_width = m_pos.width = self_size.render_width;
-		} else
-		{
-			m_pos.width = self_size.render_width;
-		}
-	} else
-	{
-		m_pos.width = ret_width;
-		if(self_size.width.type == containing_block_context::cbc_value_type_absolute && ret_width > self_size.width)
-		{
-			ret_width = self_size.width;
-		}
-	}
+    // Set block height
+    if(self_size.height.type != containing_block_context::cbc_value_type_auto &&
+       ((containing_block_size.size_mode & containing_block_context::size_mode_content) == 0))
+    {
+        m_pos.height  = self_size.height;
+        m_pos.height -= box_sizing_height();
+    } else if(src_el()->is_block_formatting_context())
+    {
+        // add the floats' height to the block height
+        pixel_t floats_height = fmt_ctx->get_floats_height();
+        m_pos.height          = std::max(floats_height, m_pos.height);
+    }
+    if((containing_block_size.size_mode & containing_block_context::size_mode_content) != 0)
+    {
+        if(self_size.height.type == containing_block_context::cbc_value_type_absolute)
+        {
+            m_pos.height = std::min<pixel_t>(m_pos.height, self_size.height);
+        }
+    }
 
-	// Fix width with max-width attribute
-	if(self_size.max_width.type != containing_block_context::cbc_value_type_none)
-	{
-		if(m_pos.width > self_size.max_width)
-		{
-			m_pos.width = self_size.max_width;
-			requires_rerender = true;
-		}
-	}
-
-	// Fix width with min-width attribute
-	if(self_size.min_width.type != containing_block_context::cbc_value_type_none)
-	{
-		if(m_pos.width < self_size.min_width)
-		{
-			m_pos.width = self_size.min_width;
-			requires_rerender = true;
-		}
-	} else if(m_pos.width < 0)
-	{
-		m_pos.width = 0;
-	}
-
-	// re-render content with new width if required
-	if (requires_rerender && !second_pass && !is_root())
-	{
-		if(src_el()->is_block_formatting_context())
-		{
-			fmt_ctx->clear_floats(-1);
-		} else
-		{
-			fmt_ctx->clear_floats(self_size.context_idx);
-		}
-
-		_render_content(x, y, true, self_size.new_width(m_pos.width), fmt_ctx);
-	}
-
-	// Set block height
-	if (self_size.height.type != containing_block_context::cbc_value_type_auto &&
-	    !(containing_block_size.size_mode & containing_block_context::size_mode_content))
-	{
-		// TODO: Something wrong here
-		// Percentage height from undefined containing block height is usually <= 0
-		if(self_size.height.type == containing_block_context::cbc_value_type_percentage)
-		{
-			if (self_size.height > 0)
-			{
-				m_pos.height = self_size.height;
-			}
-		} else
-		{
-			m_pos.height = self_size.height;
-		}
-		m_pos.height -= box_sizing_height();
-	} else if (src_el()->is_block_formatting_context())
-	{
-		// add the floats' height to the block height
-		pixel_t floats_height = fmt_ctx->get_floats_height();
-		if (floats_height > m_pos.height)
-		{
-			m_pos.height = floats_height;
-		}
-	}
-	if(containing_block_size.size_mode & containing_block_context::size_mode_content)
-	{
-		if(self_size.height.type == containing_block_context::cbc_value_type_absolute)
-		{
-			if(m_pos.height > self_size.height)
-			{
-				m_pos.height = self_size.height;
-			}
-		}
-	}
-
-	// Fix height with min-height attribute
-	if(self_size.min_height.type != containing_block_context::cbc_value_type_none)
-	{
-		if(m_pos.height < self_size.min_height)
-		{
-			m_pos.height = self_size.min_height;
-		}
-	} else if(m_pos.height < 0)
-	{
-		m_pos.height = 0;
-	}
-
-	// Fix width with max-width attribute
-	if(self_size.max_height.type != containing_block_context::cbc_value_type_none)
-	{
-		if(m_pos.height > self_size.max_height)
-		{
-			m_pos.height = self_size.max_height;
-		}
-	}
+    const auto apply_min_height = [&]() {
+        if(self_size.min_height.type != containing_block_context::cbc_value_type_none)
+        {
+            m_pos.height = std::max<pixel_t>(m_pos.height, self_size.min_height);
+        } else if(m_pos.height < 0_px)
+        {
+            m_pos.height = 0;
+        }
+    };
+    const auto apply_max_height = [&]() {
+        if(self_size.max_height.type != containing_block_context::cbc_value_type_none)
+        {
+            m_pos.height = std::min<pixel_t>(m_pos.height, self_size.max_height);
+        }
+    };
+    if(css().get_height().is_intrinsic_sizing() || intrinsic_min_height || intrinsic_max_height)
+    {
+        apply_max_height();
+        apply_min_height();
+    } else
+    {
+        apply_min_height();
+        apply_max_height();
+    }
 
     // calculate the final position
     m_pos.move_to(x, y);
     m_pos.x += content_offset_left();
     m_pos.y += content_offset_top();
 
-    if (src_el()->css().get_display() == display_list_item)
+    if(src_el()->css().get_display() == display_list_item)
     {
-        string list_image = src_el()->css().get_list_style_image();
-        if (!list_image.empty())
+        std::string list_image = src_el()->css().get_list_style_image();
+        if(!list_image.empty())
         {
-            size sz;
-            string list_image_baseurl = src_el()->css().get_list_style_image_baseurl();
+            size        sz;
+            std::string list_image_baseurl = src_el()->css().get_list_style_image_baseurl();
             src_el()->get_document()->container()->get_image_size(list_image.c_str(), list_image_baseurl.c_str(), sz);
-            if (m_pos.height < sz.height)
-            {
-				m_pos.height = sz.height;
-            }
+            m_pos.height = std::max(m_pos.height, sz.height);
         }
     }
 
-    return ret_width + content_offset_width();
+    ret_width += content_offset_width();
+
+    return ret_width;
 }

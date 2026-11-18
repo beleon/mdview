@@ -103,8 +103,7 @@ target_include_directories(litehtml
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/litehtml/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/litehtml/include/litehtml
             ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/litehtml/src
-            ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/litehtml/src/gumbo/include
-            ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/litehtml/src/gumbo/include/gumbo
+            ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/litehtml/src/gumbo/src
 )
 
 target_compile_definitions(litehtml PUBLIC LITEHTML_UTF8_ONLY)

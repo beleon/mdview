@@ -627,10 +627,10 @@ public:
 
     void draw_list_marker(litehtml::uint_ptr hdc,const litehtml::list_marker&mk)override{
         auto*cr=(cairo_t*)hdc;if(!cr)return;set_color(cr,mk.color);
-        double cx=mk.pos.x+mk.pos.width/2.0,cy=mk.pos.y+mk.pos.height/2.0;
+        double cx=(double)mk.pos.x+(double)mk.pos.width/2.0,cy=(double)mk.pos.y+(double)mk.pos.height/2.0;
         switch(mk.marker_type){
-        case litehtml::list_style_type_circle:cairo_arc(cr,cx,cy,mk.pos.width/2.0,0,2*M_PI);cairo_stroke(cr);break;
-        case litehtml::list_style_type_disc:cairo_arc(cr,cx,cy,mk.pos.width/2.0,0,2*M_PI);cairo_fill(cr);break;
+        case litehtml::list_style_type_circle:cairo_arc(cr,cx,cy,(double)mk.pos.width/2.0,0,2*M_PI);cairo_stroke(cr);break;
+        case litehtml::list_style_type_disc:cairo_arc(cr,cx,cy,(double)mk.pos.width/2.0,0,2*M_PI);cairo_fill(cr);break;
         case litehtml::list_style_type_square:cairo_rectangle(cr,mk.pos.x,mk.pos.y,mk.pos.width,mk.pos.height);cairo_fill(cr);break;
         default:break;}}
 
@@ -687,12 +687,14 @@ public:
     void draw_borders(litehtml::uint_ptr hdc,const litehtml::borders&b,const litehtml::position&p,bool)override{
         auto*cr=(cairo_t*)hdc;if(!cr)return;
         auto db=[&](const litehtml::border&br,double x1,double y1,double x2,double y2){
-            if(br.width>0&&br.style>litehtml::border_style_hidden){set_color(cr,br.color);cairo_set_line_width(cr,br.width);
+            double bw=(double)br.width;if(bw>0&&br.style>litehtml::border_style_hidden){set_color(cr,br.color);cairo_set_line_width(cr,bw);
                 cairo_move_to(cr,x1,y1);cairo_line_to(cr,x2,y2);cairo_stroke(cr);}};
-        db(b.top,p.left(),p.top()+b.top.width/2.0,p.right(),p.top()+b.top.width/2.0);
-        db(b.bottom,p.left(),p.bottom()-b.bottom.width/2.0,p.right(),p.bottom()-b.bottom.width/2.0);
-        db(b.left,p.left()+b.left.width/2.0,p.top(),p.left()+b.left.width/2.0,p.bottom());
-        db(b.right,p.right()-b.right.width/2.0,p.top(),p.right()-b.right.width/2.0,p.bottom());}
+        double L=(double)p.left(),T=(double)p.top(),R=(double)p.right(),B=(double)p.bottom();
+        double wt=(double)b.top.width,wb=(double)b.bottom.width,wl=(double)b.left.width,wr=(double)b.right.width;
+        db(b.top,L,T+wt/2.0,R,T+wt/2.0);
+        db(b.bottom,L,B-wb/2.0,R,B-wb/2.0);
+        db(b.left,L+wl/2.0,T,L+wl/2.0,B);
+        db(b.right,R-wr/2.0,T,R-wr/2.0,B);}
 
     void set_clip(const litehtml::position&pos,const litehtml::border_radiuses&)override{
         if(!rcr_)return;cairo_save(rcr_);cairo_rectangle(rcr_,pos.x,pos.y,pos.width,pos.height);cairo_clip(rcr_);}
@@ -710,8 +712,8 @@ public:
         if (cursor_cb_) cursor_cb_(name ? std::string(name) : std::string());
     }
     void set_cursor_cb(std::function<void(const std::string&)> cb){cursor_cb_=std::move(cb);}
-    void import_css(litehtml::string&,const litehtml::string&,litehtml::string&)override{}
-    void transform_text(litehtml::string&text,litehtml::text_transform tt)override{
+    void import_css(std::string&,const std::string&,std::string&)override{}
+    void transform_text(std::string&text,litehtml::text_transform tt)override{
         if(tt==litehtml::text_transform_uppercase)for(auto&c:text)c=(char)toupper((unsigned char)c);
         else if(tt==litehtml::text_transform_lowercase)for(auto&c:text)c=(char)tolower((unsigned char)c);}
     void get_viewport(litehtml::position&c)const override{c.x=c.y=0;c.width=vw_;c.height=vh_;}
@@ -719,8 +721,8 @@ public:
     void get_media_features(litehtml::media_features&m)const override{
         m.type=litehtml::media_type_screen;m.width=vw_;m.height=vh_;
         m.device_width=vw_;m.device_height=vh_;m.color=8;m.monochrome=0;m.color_index=256;m.resolution=96;}
-    void get_language(litehtml::string&l,litehtml::string&c)const override{l="en";c="en-US";}
-    litehtml::string resolve_color(const litehtml::string&)const override{return{};}
+    void get_language(std::string&l,std::string&c)const override{l="en";c="en-US";}
+    std::string resolve_color(const std::string&)const override{return{};}
 
 private:
     enum class CharClass { Space, Word, Punct };
