@@ -451,6 +451,11 @@ FontFace FontFaceCache::getFontFace(const std::string& family, bool bold, bool i
     return FontFace();
 }
 
+FontFaceCache::~FontFaceCache()
+{
+    plutovg_font_face_cache_destroy(m_cache);
+}
+
 FontFaceCache::FontFaceCache()
     : m_cache(plutovg_font_face_cache_create())
 {
