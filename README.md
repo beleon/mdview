@@ -141,6 +141,11 @@ They install `/usr/bin/mdview`, the icons and the `.desktop` entry
 system-wide and pull in the runtime libraries listed
 [below](#runtime-dependencies).
 
+mdview always opens a file, so the `.desktop` entry is hidden from
+application menus (`NoDisplay=true`). It still registers mdview for
+`text/markdown`: pick it under "Open With" in a file manager, or make it
+the default with `xdg-mime default mdview.desktop text/markdown`.
+
 Anywhere else, the standalone binary installs itself for the current user:
 
 ```bash
