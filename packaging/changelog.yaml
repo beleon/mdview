@@ -5,6 +5,14 @@
 #
 # Notes must be single-line: nfpm renders every continuation line of a
 # multi-line scalar as a bogus sub-bullet.
+- semver: 1.2.0
+  date: '2026-11-23T00:00:00Z'
+  packager: Leon Becker <13580066+beleon@users.noreply.github.com>
+  changes:
+  - note: 'First release as .deb (Ubuntu 24.04+, Debian 13+) and .rpm (Fedora 43+) packages, each built against its distribution''s own libraries.'
+  - note: 'Updated vendored libraries: litehtml to current master (after v0.10), lunasvg to current master with plutovg 1.3.3, md4c to 0.6.0.'
+  - note: 'The desktop entry is hidden from application menus: mdview needs a file to show, and launched from a menu it did nothing. It is still offered under Open With and can be the default handler for Markdown files.'
+
 - semver: 1.1.1
   date: '2026-08-06T00:00:00Z'
   packager: Leon Becker <13580066+beleon@users.noreply.github.com>
