@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(mdview VERSION 1.1.1 LANGUAGES C CXX)
+project(mdview VERSION 1.2.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -105,8 +105,7 @@ target_include_directories(litehtml
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/litehtml/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/litehtml/include/litehtml
             ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/litehtml/src
-            ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/litehtml/src/gumbo/include
-            ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/litehtml/src/gumbo/include/gumbo
+            ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/litehtml/src/gumbo/src
 )
 
 target_compile_definitions(litehtml PUBLIC LITEHTML_UTF8_ONLY)

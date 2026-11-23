@@ -150,7 +150,12 @@ static inline int do_install() {
         "MimeType=text/markdown;\n"
         "Categories=Office;Viewer;TextTools;\n"
         "StartupNotify=true\n"
-        "Terminal=false\n";
+        "Terminal=false\n"
+        /* mdview needs a file to show; launched bare it can only print its
+           usage, which a launcher swallows. NoDisplay keeps it out of menus
+           while leaving the text/markdown association, so it is still offered
+           under "Open With" and can be the default .md handler. */
+        "NoDisplay=true\n";
     if (!write_file(desktop_path, desktop.data(), desktop.size())) {
         fprintf(stderr, "mdview --install: failed to write %s: %s\n",
                 desktop_path.c_str(), strerror(errno));

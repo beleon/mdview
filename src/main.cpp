@@ -33,6 +33,10 @@ extern "C" {
 #include "window.h"
 }
 
+/* litehtml hands back the boxes a mouse event dirtied; mdview redraws the
+   whole viewport on any change, so the callback has nothing to record. */
+static void ignore_redraw(const litehtml::position &) {}
+
 /* Convert [[Name]] and [[Name|Display]] wiki links to standard Markdown before
    md4c sees the source. Names with spaces use angle-bracket URL syntax so
    md4c parses them correctly. */
@@ -1145,11 +1149,9 @@ static std::string href_from_over(App *a) {
 
 /* Same, for callers holding a point that hasn't been hit-tested yet. */
 static std::string href_at(App *a, int doc_x, int doc_y) {
-  if (!a->doc)
-    return "";
-  std::vector<litehtml::position> rb;
-  a->doc->on_mouse_over(doc_x, doc_y, doc_x, doc_y, rb);
-  return href_from_over(a);
+    if (!a->doc) return "";
+    a->doc->on_mouse_over(doc_x, doc_y, doc_x, doc_y, ignore_redraw);
+    return href_from_over(a);
 }
 
 /* Decode %XX percent-escapes. md4c percent-encodes spaces and non-ASCII bytes
@@ -1911,30 +1913,9 @@ static void on_mouse_move(mdv_window *w, int x, int y, void *ud) {
     }
   }
 
-  Selection &sel = a->con.selection();
-  if (sel.dragging) {
-    /* The out-of-viewport case was caught at the top of this function;
-       here we're guaranteed in-viewport, so cancel any prior autoscroll
-       and just extend normally. */
-    set_hover_href(a, w, ""); /* dragging a selection isn't hovering */
-    a->autoscroll_dir = 0;
-    int dx2 = (int)((x_eff + a->scroll_x) / a->zoom);
-    int dy2 = (int)((y + a->scroll_y) / a->zoom);
-    extend_selection_drag(a, dx2, dy2);
-    mdv_window_set_tick_enabled(w, tick_on(a));
-    mdv_window_request_redraw(w);
-    return;
-  }
-
-  if (!a->doc) {
-    set_hover_href(a, w, "");
-    return;
-  }
-  int dx2 = (int)((x_eff + a->scroll_x) / a->zoom),
-      dy2 = (int)((y + a->scroll_y) / a->zoom);
-  std::vector<litehtml::position> rb;
-  if (a->doc->on_mouse_over(dx2, dy2, dx2, dy2, rb))
-    mdv_window_request_redraw(w);
+  if (!a->doc) { set_hover_href(a, w, ""); return; }
+  int dx2 = (int)((x_eff + a->scroll_x) / a->zoom), dy2 = (int)((y + a->scroll_y) / a->zoom);
+  if (a->doc->on_mouse_over(dx2, dy2, dx2, dy2, ignore_redraw)) mdv_window_request_redraw(w);
 
   /* Status-bar link readout, read straight off the hit test above. */
   std::string h = in_doc ? href_from_over(a) : std::string();
@@ -2088,24 +2069,11 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
           mdv_window_request_redraw(w);
           return;
         }
-      } else if (count == 3 && !(mods & MDV_MOD_SHIFT)) {
-        TextRange tr = a->con.find_line_at(dx, dy);
-        if (tr.found) {
-          sel.granularity = Selection::GRAN_LINE;
-          sel.init_start_x = tr.start_x;
-          sel.init_start_y = tr.start_y;
-          sel.init_end_x = tr.end_x;
-          sel.init_end_y = tr.end_y;
-          sel.anchor_x = tr.start_x;
-          sel.anchor_y = tr.start_y;
-          sel.extent_x = tr.end_x;
-          sel.extent_y = tr.end_y;
-          sel.active = true;
-          sel.dragging = true;
-          mdv_window_request_redraw(w);
-          return;
-        }
-      }
+    }
+    if (btn != BTN_LEFT) return;  /* litehtml only models left-button events */
+    if (!a->doc) return;
+    if (pr) a->doc->on_lbutton_down(dx, dy, dx, dy, ignore_redraw);
+    else    a->doc->on_lbutton_up(dx, dy, dx, dy, ignore_redraw);
 
       sel.granularity = Selection::GRAN_CHAR;
       /* Snap click y to a line center. Clicking between two words on
@@ -2163,11 +2131,6 @@ static void on_mouse_button(mdv_window *w, int x, int y, int btn, uint32_t mods,
     return;
   int dx = (int)((x_eff + a->scroll_x) / a->zoom),
       dy = (int)((y + a->scroll_y) / a->zoom);
-  std::vector<litehtml::position> rb;
-  if (pr)
-    a->doc->on_lbutton_down(dx, dy, dx, dy, rb);
-  else
-    a->doc->on_lbutton_up(dx, dy, dx, dy, rb);
 
   /* on_lbutton_up may have queued a local-link navigation (see App::
      pending_nav). Run it now, after litehtml's dispatch has returned, so

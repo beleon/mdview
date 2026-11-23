@@ -7,27 +7,33 @@
 
 namespace litehtml
 {
-	class render_item_flex : public render_item_block
-	{
-		std::list<flex_line> m_lines;
+    class render_item_flex : public render_item_block
+    {
+        std::list<flex_line> m_lines;
 
-		std::list<flex_line> get_lines(const containing_block_context &self_size, formatting_context *fmt_ctx, bool is_row_direction,
-									   pixel_t container_main_size, bool single_line);
-		pixel_t _render_content(pixel_t x, pixel_t y, bool second_pass, const containing_block_context &self_size, formatting_context* fmt_ctx) override;
+        std::list<flex_line> get_lines(const containing_block_context& self_size, formatting_context* fmt_ctx,
+                                       bool is_row_direction, pixel_t container_main_size, pixel_t main_gap,
+                                       bool single_line, bool second_pass);
 
-	public:
-		explicit render_item_flex(std::shared_ptr<element>  src_el) : render_item_block(std::move(src_el))
-		{}
+        void    calc_intrinsic_size() override;
+        pixel_t _render_content(pixel_t x, pixel_t y, bool second_pass, const containing_block_context& self_size,
+                                formatting_context* fmt_ctx) override;
 
-		std::shared_ptr<render_item> clone() override
-		{
-			return std::make_shared<render_item_flex>(src_el());
-		}
-		std::shared_ptr<render_item> init() override;
+      public:
+        explicit render_item_flex(std::shared_ptr<element> src_el) :
+            render_item_block(std::move(src_el))
+        {
+        }
 
-		pixel_t get_first_baseline() override;
-		pixel_t get_last_baseline() override;
-	};
-}
+        std::shared_ptr<render_item> clone() override
+        {
+            return std::make_shared<render_item_flex>(src_el());
+        }
+        std::shared_ptr<render_item> init() override;
 
-#endif //LITEHTML_RENDER_FLEX_H
+        pixel_t get_first_baseline() override;
+        pixel_t get_last_baseline() override;
+    };
+} // namespace litehtml
+
+#endif // LITEHTML_RENDER_FLEX_H

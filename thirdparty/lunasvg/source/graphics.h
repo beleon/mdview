@@ -422,6 +422,8 @@ public:
     bool addFontFace(const std::string& family, bool bold, bool italic, const FontFace& face);
     FontFace getFontFace(const std::string& family, bool bold, bool italic) const;
 
+    ~FontFaceCache();
+
 private:
     FontFaceCache();
     plutovg_font_face_cache_t* m_cache;

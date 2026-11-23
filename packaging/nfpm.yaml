@@ -1,0 +1,45 @@
+# nfpm config for the deb/rpm packages (https://nfpm.goreleaser.com).
+# Not run directly: packaging/build-packages.sh stages the tree, runs nfpm
+# from inside the stage directory (src paths are stage-relative) and appends
+# the runtime dependencies it derived for that package's distro family.
+name: mdview
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: text
+maintainer: Leon Becker <13580066+beleon@users.noreply.github.com>
+description: |
+  Quick-look Markdown viewer for the Wayland desktop
+  Opens a README or a note in a native Wayland window without breaking flow:
+  it starts fast, does not pin your terminal, and gets out of your way.
+  .
+  Markdown is rendered with md4c, laid out with litehtml and drawn with Cairo
+  and Pango; there is no GTK, Qt, Electron or browser engine. Includes SVG
+  support, find, an outline sidebar, live reload, links between local
+  Markdown files, and syntax highlighting through bat, pygmentize, highlight
+  or source-highlight when one of them is installed.
+  .
+  Wayland only: there is no X11 or XWayland fallback.
+# One URL only: deb Homepage and rpm URL are single-valued. The repository
+# also lives, identically, at https://codefloe.com/beleon/mdview.
+homepage: https://github.com/beleon/mdview
+# The rpm License tag. md4c, lunasvg and plutovg are MIT; litehtml is
+# BSD-3-Clause; its bundled gumbo is Apache-2.0; plutovg's rasteriser is FTL.
+license: MIT AND BSD-3-Clause AND Apache-2.0 AND FTL
+changelog: changelog.yaml
+
+# Every file is owned by root:root, not by whoever ran the build. nfpm has
+# no global default for this, so it is set per entry.
+contents:
+  - src: usr/bin/mdview
+    dst: /usr/bin/mdview
+    file_info: {mode: 0755, owner: root, group: root}
+  - src: usr/share/applications/mdview.desktop
+    dst: /usr/share/applications/mdview.desktop
+    file_info: {mode: 0644, owner: root, group: root}
+  - src: usr/share/icons/hicolor
+    dst: /usr/share/icons/hicolor
+    file_info: {owner: root, group: root}
+  - src: usr/share/doc/mdview
+    dst: /usr/share/doc/mdview
+    file_info: {owner: root, group: root}

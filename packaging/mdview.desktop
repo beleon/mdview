@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=mdview
+GenericName=Markdown Viewer
+Comment=Lightweight Wayland-native Markdown viewer
+Exec=mdview -f %F
+Icon=mdview
+MimeType=text/markdown;
+Categories=Office;Viewer;TextTools;
+StartupNotify=true
+Terminal=false
+# mdview needs a file to show, so it is only offered where there is one:
+# "Open With" and as a text/markdown handler, not in launchers and menus.
+NoDisplay=true

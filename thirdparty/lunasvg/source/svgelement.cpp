@@ -908,7 +908,11 @@ static Bitmap loadImageResource(const std::string& href)
         return plutovg_surface_load_from_image_base64(input.data(), input.length());
     }
 
+#ifdef LUNASVG_DISABLE_EXTERNAL_RESOURCES
+    return Bitmap();
+#else
     return plutovg_surface_load_from_image_file(href.data());
+#endif
 }
 
 void SVGImageElement::parseAttribute(PropertyID id, const std::string& value)
@@ -1052,7 +1056,7 @@ void SVGClipPathElement::applyClipMask(SVGRenderState& state) const
 {
     if(state.hasCycleReference(this))
         return;
-    auto maskImage = Canvas::create(state.currentTransform().mapRect(state.paintBoundingBox()));
+    auto maskImage = Canvas::create(state.currentTransform().mapRect(state.paintBoundingBox()).intersected(state.canvas()->extents()));
     auto currentTransform = state.currentTransform() * localTransform();
     if(m_clipPathUnits.value() == Units::ObjectBoundingBox) {
         auto bbox = state.fillBoundingBox();
@@ -1193,7 +1197,7 @@ void SVGMaskElement::applyMask(SVGRenderState& state) const
 {
     if(state.hasCycleReference(this))
         return;
-    auto maskImage = Canvas::create(state.currentTransform().mapRect(state.paintBoundingBox()));
+    auto maskImage = Canvas::create(state.currentTransform().mapRect(state.paintBoundingBox()).intersected(state.canvas()->extents()));
     maskImage->clipRect(maskRect(state.element()), FillRule::NonZero, state.currentTransform());
 
     auto currentTransform = state.currentTransform();
